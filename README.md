@@ -1,143 +1,335 @@
-# Quantum Audio Visual Lab
+````markdown
+# Quantum Sonification Team
 
-A research-driven framework for the **visualization and sonification of quantum algorithms** using **fractal-based representations**.
+A research-driven project for the **sonification of Random Quantum Circuits (RQC)**.
 
----
-
-## 🚀 Overview
-
-This project explores a novel approach to understanding quantum systems by transforming quantum state evolution into:
-
-- 🌐 **Fractal visual structures**
-- 🎵 **Audio / musical representations**
-
-The goal is to build an **intuitive, scientifically meaningful framework** to analyze:
-
-- quantum state evolution  
-- phase and interference  
-- entanglement  
-- algorithmic dynamics  
+This repository explores how quantum information can be transformed into sound. The current version focuses on extracting local Bloch-sphere data from a multiqubit random quantum circuit and mapping that data into stereo audio.
 
 ---
 
-## 🧠 Core Idea
+## Overview
 
-We map quantum states into dual representations:
+The project originally started from a broader quantum audio-visual framework that included both visualization and sonification. The current repository is now focused specifically on **quantum sonification**.
 
-Quantum State → Core → Visualization (Fractals)
-→ Sonification (Audio)
+The main goal is to create an audio representation of quantum circuit evolution, especially:
 
-This creates a **multi-sensory interpretation** of quantum processes.
+- local qubit behavior
+- phase evolution
+- superposition dynamics
+- mixedness caused by multiqubit interaction
+- layer-by-layer changes in a Random Quantum Circuit
 
-```python
-quantum_visual_sonic_engine/
-|
-|-- core/             # Quantum logic (states, circuits, simulators)
-|-- visualization/    # Fractal generation and rendering
-|-- sonification/     # Audio mapping and synthesis
-|-- interface/        # Future integration (UI / dashboard)
-|-- notebooks/        # Experiments and prototypes
-|-- data/             # Generated outputs (images, audio)
-`-- docs/             # Notes, papers, references
+---
+
+## Current Pipeline
+
+```text
+Random Quantum Circuit
+        ↓
+Statevector Simulation
+        ↓
+Local Bloch Data Extraction
+        ↓
+Quantum-to-Audio Mapping
+        ↓
+Layer-by-Layer WAV Export
+````
+
+For each circuit layer, the code extracts local Bloch information from every qubit and generates an audio file.
+
+---
+
+## Current Sonification Model
+
+The latest model uses local Bloch-sphere quantities:
+
+```text
+theta      → frequency
+phi        → stereo panning
+r          → amplitude
+mixedness  → texture/modulation
 ```
+
+Where:
+
+* `theta` is the polar angle of the local Bloch vector.
+* `phi` is the azimuthal angle.
+* `r` is the length of the local Bloch vector.
+* `mixedness = 1 - r` indicates how far the local qubit state is from a pure state.
+
+This allows the sound to represent not only the state of each qubit, but also how local purity changes as the circuit evolves.
+
 ---
 
-## 🧩 Project Architecture
+## Core Idea
+
+The project maps quantum circuit evolution into sound:
+
+```text
+Quantum State
+      ↓
+Random Quantum Circuit Evolution
+      ↓
+Statevector Simulation
+      ↓
+Local Bloch-Sphere Representation
+      ↓
+Audio Synthesis
+      ↓
+Layer-by-Layer Sonification
+```
+
+This creates a multisensory interpretation of quantum dynamics, where changes in the quantum state are represented through audible features.
+
+---
+
+## Repository Structure
+
+```text
+Quantum_Sonification_Team/
+│
+├── README.md
+│
+├── notebooks/
+│   └── exploratory notebooks and visualizations
+│
+├── outputs/
+│   └── generated WAV files
+│
+├── experiments/
+│   ├── rqc_dayana_prob.py
+│   ├── rqc_prototipo.py
+│   ├── rqc_rocio.py
+│   └── rqc_valentino_ampli.py
+│
+└── src/
+    ├── gates.py
+    ├── circuit.py
+    ├── simulations.py
+    ├── sonification.py
+    └── rqc_sonification.py
+```
+
+---
+
+## Project Architecture
 
 ```mermaid
 graph TD
 
-    A[Quantum State] --> B[Core Module]
+    A[Random Quantum Circuit] --> B[Statevector Simulation]
 
-    B --> C[Visualization]
-    B --> D[Sonification]
+    B --> C[Local Bloch Data Extraction]
 
-    C --> E[Fractal Images / Animations]
-    D --> F[Audio / Music]
+    C --> D[Theta]
+    C --> E[Phi]
+    C --> F[Bloch Vector Length r]
+    C --> G[Mixedness 1-r]
 
-    C --> G[Notebooks]
-    D --> G
+    D --> H[Frequency Mapping]
+    E --> I[Stereo Panning]
+    F --> J[Amplitude Mapping]
+    G --> K[Texture / Modulation]
 
-    B --> H[Data Storage]
+    H --> L[Audio Synthesis]
+    I --> L
+    J --> L
+    K --> L
 
-    E --> I[Interface]
-    F --> I
-
-    I --> J[Interactive Experience]
+    L --> M[Layer-by-Layer WAV Files]
 ```
 
-## 🧩 Project Structure
 ---
 
-## ⚙️ Modules
+## Main Modules
 
-### 🔹 Core
-Shared quantum logic:
-- statevector generation
-- quantum circuits (Qiskit)
-- amplitudes and phase extraction
+### `src/gates.py`
 
----
+Defines the custom single-qubit gates used in the Random Quantum Circuit:
 
-### 🔹 Visualization
-Focus:
-- fractal-based representations
-- geometric mapping of quantum states
-- rendering (2D / 3D)
+* `√X`
+* `√Y`
+* `√W`
 
-**Output:**
-- images / animations
+These gates are stored in `single_q_gates` and reused during circuit construction.
 
 ---
 
-### 🔹 Sonification
-Focus:
-- mapping quantum states to sound
-- audio synthesis
-- signal processing
+### `src/circuit.py`
 
-**Output:**
-- audio / music
+Contains the circuit-building logic.
 
----
+Each RQC layer applies:
 
-### 🔹 Interface (coming soon)
-Goal:
-- combine visualization + audio
-- interactive exploration
+1. a random single-qubit gate to each qubit;
+2. an fSim gate between neighboring qubits.
 
----
+The fSim gates are applied in a brickwork pattern:
 
-## 🧪 Technologies
+```text
+Layer 0: (0,1), (2,3), (4,5), ...
+Layer 1: (1,2), (3,4), (5,6), ...
+Layer 2: (0,1), (2,3), (4,5), ...
+```
 
-- Python
-- Qiskit
-- NumPy
-- Matplotlib / Plotly
-- Librosa (or other audio libraries)
+This pattern creates local two-qubit interactions across the register.
 
 ---
 
-## 🧑‍💻 Workflow
+### `src/simulations.py`
 
-- Use `notebooks/` for experiments and exploration  
-- Move stable code into Python modules  
-- Keep logic modular and reusable  
+Handles simulation and Bloch-data extraction.
+
+The code simulates the circuit using Qiskit Aer and computes, for each qubit:
+
+```text
+x, y, z       → local Bloch vector components
+theta         → polar angle
+phi           → azimuthal angle
+r             → Bloch vector length
+mixedness     → 1 - r
+```
+
+The Bloch vector is local, meaning it describes each individual qubit after the rest of the multiqubit system is treated as its environment.
 
 ---
 
-## 🔬 Research Direction
+### `src/sonification.py`
 
-We aim to investigate:
+Maps the extracted Bloch data into stereo audio.
 
-- relationship between fractal complexity and quantum complexity  
-- visual patterns of entanglement  
-- audio representation of quantum dynamics  
-- human-centered interpretation of Hilbert space  
+Current mapping:
+
+```text
+theta      → frequency
+phi        → stereo panning
+r          → amplitude
+mixedness  → texture/modulation
+```
+
+The output is written as `.wav` audio.
 
 ---
 
-## 🤝 Contributors
+### `src/rqc_sonification.py`
 
-QuantumHub × QuMatrix collaboration
+Main execution script.
 
+It:
+
+1. sets the number of qubits and layers;
+2. generates the RQC layer by layer;
+3. extracts Bloch data after each layer;
+4. exports one `.wav` file per layer into `outputs/`.
+
+---
+
+## Experiments
+
+The `experiments/` folder contains previous or alternative approaches.
+
+Examples:
+
+```text
+rqc_dayana_prob.py        → probability-based sonification
+rqc_prototipo.py          → early RQC prototype
+rqc_rocio.py              → amplitude/phase-based layer sonification
+rqc_valentino_ampli.py    → amplitude-based sonification
+```
+
+These files are kept for reference, comparison, and future development. The clean and current model should remain inside `src/`.
+
+---
+
+## Technologies
+
+* Python
+* Qiskit
+* Qiskit Aer
+* NumPy
+* SciPy
+* WAV audio synthesis
+
+---
+
+## Installation
+
+Install the required dependencies:
+
+```bash
+pip install numpy scipy qiskit qiskit-aer
+```
+
+---
+
+## How to Run
+
+From the repository root:
+
+```bash
+cd src
+python rqc_sonification.py
+```
+
+The generated audio files will be saved in:
+
+```text
+outputs/
+```
+
+Example outputs:
+
+```text
+bloch_layer_00_initial.wav
+bloch_layer_01.wav
+bloch_layer_02.wav
+...
+bloch_layer_10.wav
+```
+
+---
+
+## Suggested Git Hygiene
+
+Do not commit generated audio files, cache files, or Windows metadata files.
+
+Recommended `.gitignore`:
+
+```gitignore
+*Zone.Identifier*
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+outputs/*.wav
+```
+
+---
+
+## Research Direction
+
+This repository investigates how quantum circuit dynamics can be translated into sound in a way that is both computationally grounded and perceptually interpretable.
+
+Current focus:
+
+* Random Quantum Circuit sonification
+* local Bloch-vector extraction
+* layer-by-layer quantum evolution
+* stereo audio mapping
+* comparison between different quantum-to-sound mappings
+
+Future directions may include:
+
+* sonification of entanglement measures
+* comparison between local and global quantum descriptors
+* animated Bloch-sphere visualization synchronized with sound
+* interactive exploration of quantum circuits
+* more advanced synthesis models
+
+---
+
+## Contributors
+
+Quantum Sonification Team
+
+```
+```
