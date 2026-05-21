@@ -8,8 +8,6 @@ This repository explores how quantum information can be transformed into sound. 
 
 ## Overview
 
-The project originally started from a broader quantum audio-visual framework that included both visualization and sonification. The current repository is now focused specifically on **quantum sonification**.
-
 The main goal is to create an audio representation of quantum circuit evolution, especially:
 
 - local qubit behavior
@@ -79,35 +77,6 @@ Layer-by-Layer Sonification
 ```
 
 This creates a multisensory interpretation of quantum dynamics, where changes in the quantum state are represented through audible features.
-
----
-
-## Repository Structure
-
-```text
-Quantum_Sonification_Team/
-│
-├── README.md
-│
-├── notebooks/
-│   └── exploratory notebooks and visualizations
-│
-├── outputs/
-│   └── generated WAV files
-│
-├── experiments/
-│   ├── rqc_dayana_prob.py
-│   ├── rqc_prototipo.py
-│   ├── rqc_rocio.py
-│   └── rqc_valentino_ampli.py
-│
-└── src/
-    ├── gates.py
-    ├── circuit.py
-    ├── simulations.py
-    ├── sonification.py
-    └── rqc_sonification.py
-```
 
 ---
 
@@ -276,37 +245,11 @@ The generated audio files will be saved in:
 outputs/
 ```
 
-Example outputs:
-
-```text
-bloch_layer_00_initial.wav
-bloch_layer_01.wav
-bloch_layer_02.wav
-...
-bloch_layer_10.wav
-```
-
----
-
-## Suggested Git Hygiene
-
-Do not commit generated audio files, cache files, or Windows metadata files.
-
-Recommended `.gitignore`:
-
-```gitignore
-*Zone.Identifier*
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-outputs/*.wav
-```
-
 ---
 
 ## Research Direction
 
-This repository investigates how quantum circuit dynamics can be translated into sound in a way that is both computationally grounded and perceptually interpretable.
+This repository investigates how quantum circuit  can be translated into sound in a way that is both computationally grounded and perceptually interpretable.
 
 Current focus:
 
@@ -318,11 +261,9 @@ Current focus:
 
 Future directions may include:
 
-* sonification of entanglement measures
-* comparison between local and global quantum descriptors
 * animated Bloch-sphere visualization synchronized with sound
 * interactive exploration of quantum circuits
-* more advanced synthesis models
+* interface to listen and visualize evolution
 
 ---
 
