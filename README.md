@@ -52,12 +52,6 @@ Where:
 * `r` is the local Bloch vector length.
 * `mixedness = 1 - r` measures how far the local qubit state is from pure.
 
-Where:
-
-* theta is the polar angle of the local Bloch vector.
-* phi is the azimuthal angle.
-* r is the length of the local Bloch vector.
-* mixedness = 1 - r indicates how far the local qubit state is from a pure state.
 
 ---
 
