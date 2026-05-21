@@ -1,4 +1,3 @@
-````markdown
 # Quantum Sonification Team
 
 A research-driven project for the **sonification of Random Quantum Circuits (RQC)**.
