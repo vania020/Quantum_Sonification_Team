@@ -1,46 +1,33 @@
 import numpy as np
 import random
-from simulations import generate_bloch_audio_data_by_layer
-from sonification import export_bloch_to_wav
 from pathlib import Path
-
-
-# ============================================================
-# 8. BLOQUE PRINCIPAL
-# ============================================================
+from simulations import generate_schmidt_spectrum_data
+from sonification import export_schmidt_spectrum_to_wav
 
 if __name__ == "__main__":
-
-    random.seed(0)
-    np.random.seed(0)
+    random.seed(42)
+    np.random.seed(42)
 
     num_qubits = 15
     layers = 10
 
-    print(f"Generando circuito RQC de {num_qubits} qubits y {layers} capas...")
-    print(f"Se generarán {layers + 1} archivos WAV.")
-    print("Mapeo usado:")
-    print("theta -> frecuencia")
-    print("phi -> paneo estéreo")
-    print("r -> amplitud")
-    print("1-r -> textura/modulación")
-
-    layer_data = generate_bloch_audio_data_by_layer(
+    print(f"Iniciando Análisis de Espectro de Schmidt para {num_qubits} qubits...")
+    print("Rigor Físico: Distribución exacta de Autovalores de Entrelazamiento Bipartito")
+    print("Rigor Acústico: Síntesis Espectral Inarmónica (Timbre Cuántico)")
+    
+    layer_data = generate_schmidt_spectrum_data(
         num_qubits=num_qubits,
-        layers=layers,
-        use_mps=False
+        layers=layers
     )
 
-    output_dir = Path("../outputs")
-    output_dir.mkdir(exist_ok=True)
+    output_dir = Path("../outputs_schmidt_spectrum")
+    output_dir.mkdir(exist_ok=True, parents=True)
 
-    for layer_number, bloch_data in layer_data:
+    for layer_number, evals in layer_data:
+        filename = output_dir / f"schmidt_layer_{layer_number:02d}.wav"
+        export_schmidt_spectrum_to_wav(evals, filename)
+        
+        # Interpretación Teórica Impresa en Terminal
+        print(f"Capa {layer_number:02d} | Rango de Entrelazamiento (Modos activos): {len(evals)}")
 
-        if layer_number == 0:
-            filename = output_dir / "bloch_layer_00_initial.wav"
-        else:
-            filename = output_dir / f"bloch_layer_{layer_number:02d}.wav"
-
-        export_bloch_to_wav(bloch_data, filename)
-
-    print("Proceso terminado correctamente.")
+    print("Transmutación física completada exitosamente.")

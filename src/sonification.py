@@ -1,91 +1,49 @@
+# ============================================================
+# sonification.py (NUEVO: Sintetizador de Espectro de Schmidt)
+# ============================================================
 import numpy as np
 import scipy.io.wavfile as wavfile
 
-
-
-# ============================================================
-# 7. EXPORTAR DATOS DE BLOCH A WAV
-# ============================================================
-
-def export_bloch_to_wav(
-    bloch_data,
-    filename="bloch_texture.wav",
-    sample_rate=44100,
-    duration_sec=3,
-    base_freq=220,
-    freq_range=660
-):
+def export_schmidt_spectrum_to_wav(eigenvalues, filename, sample_rate=44100, duration_sec=5.0):
     """
-    Convierte datos de Bloch local en audio estéreo.
-
-    Mapeo:
-        theta      -> frecuencia
-        phi        -> paneo estéreo
-        r          -> amplitud
-        mixedness  -> textura/modulación
+    Mapeo Espectral Físico:
+    Convierte la distribución de autovalores de entrelazamiento
+    en la firma timbral (espectro inarmónico) del sonido.
     """
-
-    theta = bloch_data["theta"]
-    phi = bloch_data["phi"]
-    r = bloch_data["r"]
-    mixedness = bloch_data["mixedness"]
-
-    num_qubits = len(theta)
-
     total_samples = int(sample_rate * duration_sec)
     t = np.linspace(0, duration_sec, total_samples, endpoint=False)
+    
+    # Señal mono que luego duplicaremos
+    audio_signal = np.zeros(total_samples)
+    
+    # Frecuencia fundamental del sistema no entrelazado
+    base_freq = 110.0 # La2 (A2)
+    
+    # Reconstrucción de la Onda a partir del Entrelazamiento
+    for i, val in enumerate(eigenvalues):
+        # Mapeo Vanguardista Inarmónico:
+        # Los modos de entrelazamiento no son múltiplos enteros (no es música clásica).
+        # Usamos la raíz cuadrada para crear un espectro denso, metálico y complejo (campana).
+        freq = base_freq * np.sqrt(i + 1)
+        
+        if freq < 20000: # Límite de Nyquist / Audición
+            # La amplitud del armónico es exactamente el peso del autovalor
+            audio_signal += val * np.sin(2 * np.pi * freq * t)
 
-    left = np.zeros(total_samples)
-    right = np.zeros(total_samples)
-
-    for q in range(num_qubits):
-
-        # theta controla frecuencia
-        freq = base_freq + (theta[q] / np.pi) * freq_range
-
-        # phi controla paneo estéreo
-        pan = phi[q] / (2 * np.pi)
-
-        # r controla amplitud
-        amp = r[q] / num_qubits
-
-        # 1-r controla textura
-        texture_depth = mixedness[q]
-
-        modulation = 1.0 + 0.15 * texture_depth * np.sin(2 * np.pi * 8 * t)
-
-        signal = amp * modulation * np.sin(2 * np.pi * freq * t)
-
-        # Paneo estéreo
-        left_gain = np.cos(pan * np.pi / 2)
-        right_gain = np.sin(pan * np.pi / 2)
-
-        left += left_gain * signal
-        right += right_gain * signal
-
-    # Fade in / fade out
-    fade_samples = int(0.05 * sample_rate)
-
-    fade_in = np.linspace(0, 1, fade_samples)
-    fade_out = np.linspace(1, 0, fade_samples)
-
-    envelope = np.ones(total_samples)
-    envelope[:fade_samples] = fade_in
-    envelope[-fade_samples:] = fade_out
-
-    left *= envelope
-    right *= envelope
-
-    # Normalización final
-    max_val = max(np.max(np.abs(left)), np.max(np.abs(right)))
-
+    # Envolvente natural (evita clicks)
+    attack = int(0.1 * sample_rate)
+    decay = int(0.5 * sample_rate)
+    env = np.ones(total_samples)
+    env[:attack] = np.linspace(0, 1, attack)
+    env[-decay:] = np.linspace(1, 0, decay)
+    audio_signal *= env
+    
+    # Normalización matemática preservando las proporciones físicas
+    max_val = np.max(np.abs(audio_signal))
     if max_val > 0:
-        left = left / max_val
-        right = right / max_val
-
-    stereo_audio = np.column_stack((left, right))
-    stereo_audio_int16 = (stereo_audio * 32767).astype(np.int16)
-
-    wavfile.write(filename, sample_rate, stereo_audio_int16)
-
-    print(f"Archivo guardado: {filename}")
+        audio_signal = (audio_signal / max_val) * 0.9 
+        
+    # Salida estéreo idéntica (el fenómeno es de Timbre, no de Espacio)
+    stereo_audio = np.vstack((audio_signal, audio_signal)).T
+    
+    wavfile.write(filename, sample_rate, stereo_audio.astype(np.float32))

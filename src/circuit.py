@@ -3,6 +3,7 @@ import random
 from qiskit import QuantumCircuit
 from qiskit.circuit.library import UnitaryGate
 from gates import single_q_gates
+from qiskit.circuit.library import QFT
 
 
 
@@ -58,4 +59,31 @@ def apply_random_circuit(num_qubits, layers):
         for i in range(start, num_qubits - 1, 2):
             qc.append(fsim_gate, [i, i + 1])
 
+    return qc
+
+def apply_random_circuit_with_qft(num_qubits, layers):
+    """
+    Construye el RQC y al final aplica una Transformada Cuántica de Fourier (QFT)
+    para revelar las periodicidades ocultas del caos cuántico.
+    """
+    qc = QuantumCircuit(num_qubits)
+    fsim_gate = create_fsim_gate()
+    prev_gates = [-1] * num_qubits
+
+    for layer_idx in range(layers):
+        for i in range(num_qubits):
+            options = list(range(len(single_q_gates)))
+            if prev_gates[i] != -1:
+                options.remove(prev_gates[i])
+            choice = random.choice(options)
+            qc.append(single_q_gates[choice], [i])
+            prev_gates[i] = choice
+
+        start = 0 if layer_idx % 2 == 0 else 1
+        for i in range(start, num_qubits - 1, 2):
+            qc.append(fsim_gate, [i, i + 1])
+
+    # EL TOQUE MAESTRO: Aplicar QFT a todo el sistema al final
+    qc.append(QFT(num_qubits), range(num_qubits))
+    
     return qc
