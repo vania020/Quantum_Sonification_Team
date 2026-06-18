@@ -1,3 +1,6 @@
+# ============================================================
+# rqc_schmidt_master.py (Orquestador de la Arquitectura Sci-Fi)
+# ============================================================
 import numpy as np
 import random
 from pathlib import Path

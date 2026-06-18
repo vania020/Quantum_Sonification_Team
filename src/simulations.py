@@ -1,5 +1,5 @@
 # ============================================================
-# simulations.py (NUEVO: Extracción del Espectro de Schmidt)
+# simulations.py (Rama: Extracción del Espectro de Schmidt)
 # ============================================================
 import numpy as np
 from qiskit import transpile
@@ -8,11 +8,6 @@ from qiskit.quantum_info import partial_trace
 from circuit import apply_random_circuit
 
 def generate_schmidt_spectrum_data(num_qubits, layers):
-    """
-    Calcula el Espectro de Entrelazamiento exacto.
-    Divide el sistema a la mitad y extrae todos los autovalores 
-    (coeficientes de Schmidt al cuadrado) de la matriz de densidad reducida.
-    """
     simulator = AerSimulator(method="statevector")
     all_layers_spectra = []
     
