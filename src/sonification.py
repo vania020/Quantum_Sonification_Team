@@ -1,91 +1,62 @@
 import numpy as np
 import scipy.io.wavfile as wavfile
+import random
 
-
-
-# ============================================================
-# 7. EXPORTAR DATOS DE BLOCH A WAV
-# ============================================================
-
-def export_bloch_to_wav(
-    bloch_data,
-    filename="bloch_texture.wav",
-    sample_rate=44100,
-    duration_sec=3,
-    base_freq=220,
-    freq_range=660
-):
-    """
-    Convierte datos de Bloch local en audio estéreo.
-
-    Mapeo:
-        theta      -> frecuencia
-        phi        -> paneo estéreo
-        r          -> amplitud
-        mixedness  -> textura/modulación
-    """
-
-    theta = bloch_data["theta"]
-    phi = bloch_data["phi"]
-    r = bloch_data["r"]
-    mixedness = bloch_data["mixedness"]
-
-    num_qubits = len(theta)
-
+def export_granular_entropy_to_wav(entropy_val, filename, sample_rate=44100, duration_sec=5.0):
+    max_S = 7.0 
+    norm_S = np.clip(entropy_val / max_S, 0.0, 1.0)
+    
     total_samples = int(sample_rate * duration_sec)
-    t = np.linspace(0, duration_sec, total_samples, endpoint=False)
+    audio_left = np.zeros(total_samples)
+    audio_right = np.zeros(total_samples)
+    
+    base_freq = 110.0 # La2 (A2)
+    
+    if norm_S < 0.02:
+        t = np.linspace(0, duration_sec, total_samples, endpoint=False)
+        signal = 0.5 * np.sin(2 * np.pi * base_freq * t)
+        audio_left = signal
+        audio_right = signal
+        
+    else:
+        grain_min_ms = 10 + (1.0 - norm_S) * 90 
+        grain_max_ms = 20 + (1.0 - norm_S) * 180 
+        num_grains = int(10 + (norm_S * 1500)) 
+        
+        for _ in range(num_grains):
+            grain_dur_ms = random.uniform(grain_min_ms, grain_max_ms)
+            grain_samples = int((grain_dur_ms / 1000.0) * sample_rate)
+            
+            pitch_shift = random.uniform(1.0 - (norm_S * 0.7), 1.0 + (norm_S * 0.7))
+            grain_freq = base_freq * pitch_shift
+            
+            t_grain = np.linspace(0, grain_dur_ms / 1000.0, grain_samples, endpoint=False)
+            grain_wave = np.sin(2 * np.pi * grain_freq * t_grain)
+            
+            window = np.hanning(grain_samples)
+            grain_wave *= window
+            
+            start_sample = random.randint(0, total_samples - grain_samples - 1)
+            
+            pan = random.uniform(0.5 - (norm_S * 0.5), 0.5 + (norm_S * 0.5))
+            left_gain = np.cos(pan * np.pi / 2)
+            right_gain = np.sin(pan * np.pi / 2)
+            
+            audio_left[start_sample:start_sample + grain_samples] += grain_wave * left_gain * 0.15
+            audio_right[start_sample:start_sample + grain_samples] += grain_wave * right_gain * 0.15
 
-    left = np.zeros(total_samples)
-    right = np.zeros(total_samples)
-
-    for q in range(num_qubits):
-
-        # theta controla frecuencia
-        freq = base_freq + (theta[q] / np.pi) * freq_range
-
-        # phi controla paneo estéreo
-        pan = phi[q] / (2 * np.pi)
-
-        # r controla amplitud
-        amp = r[q] / num_qubits
-
-        # 1-r controla textura
-        texture_depth = mixedness[q]
-
-        modulation = 1.0 + 0.15 * texture_depth * np.sin(2 * np.pi * 8 * t)
-
-        signal = amp * modulation * np.sin(2 * np.pi * freq * t)
-
-        # Paneo estéreo
-        left_gain = np.cos(pan * np.pi / 2)
-        right_gain = np.sin(pan * np.pi / 2)
-
-        left += left_gain * signal
-        right += right_gain * signal
-
-    # Fade in / fade out
-    fade_samples = int(0.05 * sample_rate)
-
-    fade_in = np.linspace(0, 1, fade_samples)
-    fade_out = np.linspace(1, 0, fade_samples)
-
-    envelope = np.ones(total_samples)
-    envelope[:fade_samples] = fade_in
-    envelope[-fade_samples:] = fade_out
-
-    left *= envelope
-    right *= envelope
-
-    # Normalización final
-    max_val = max(np.max(np.abs(left)), np.max(np.abs(right)))
-
+    attack = int(0.15 * sample_rate)
+    decay = int(0.4 * sample_rate)
+    env = np.ones(total_samples)
+    env[:attack] = np.linspace(0, 1, attack)
+    env[-decay:] = np.linspace(1, 0, decay)
+    
+    audio_left *= env
+    audio_right *= env
+    
+    final_audio = np.vstack((audio_left, audio_right)).T
+    max_val = np.max(np.abs(final_audio))
     if max_val > 0:
-        left = left / max_val
-        right = right / max_val
-
-    stereo_audio = np.column_stack((left, right))
-    stereo_audio_int16 = (stereo_audio * 32767).astype(np.int16)
-
-    wavfile.write(filename, sample_rate, stereo_audio_int16)
-
-    print(f"Archivo guardado: {filename}")
+        final_audio = final_audio / max_val
+        
+    wavfile.write(filename, sample_rate, final_audio.astype(np.float32))
