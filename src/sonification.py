@@ -1,60 +1,64 @@
+# ============================================================
+# sonification.py (Rama: Drone Sci-Fi por Espectro de Schmidt)
+# ============================================================
 import numpy as np
 import scipy.io.wavfile as wavfile
-import random
 
-def export_granular_entropy_to_wav(entropy_val, filename, sample_rate=44100, duration_sec=5.0):
-    max_S = 7.0 
-    norm_S = np.clip(entropy_val / max_S, 0.0, 1.0)
-    
+def export_schmidt_sci_fi_to_wav(eigenvalues, filename, sample_rate=44100, duration_sec=6.0):
+    """
+    Sintetizador Sci-Fi Aditivo.
+    Cada autovalor genera una capa de sonido inarmónico. Su peso dicta el volumen,
+    y modula osciladores FM y LFOs para darle un efecto de "respiración alienígena".
+    """
     total_samples = int(sample_rate * duration_sec)
-    audio_left = np.zeros(total_samples)
-    audio_right = np.zeros(total_samples)
+    t = np.linspace(0, duration_sec, total_samples, endpoint=False)
     
-    base_freq = 110.0 # La2 (A2)
+    # Frecuencia base oscura (Do2 - C2)
+    base_freq = 65.41 
+    audio_mix = np.zeros(total_samples)
     
-    if norm_S < 0.02:
-        t = np.linspace(0, duration_sec, total_samples, endpoint=False)
-        signal = 0.5 * np.sin(2 * np.pi * base_freq * t)
-        audio_left = signal
-        audio_right = signal
+    # Proporción Áurea para generar tensión inarmónica metálica
+    golden_ratio = 1.61803398 
+    
+    for i, val in enumerate(eigenvalues):
+        # Frecuencias espaciadas irracionalmente
+        freq = base_freq * (1.0 + (i * golden_ratio))
         
-    else:
-        grain_min_ms = 10 + (1.0 - norm_S) * 90 
-        grain_max_ms = 20 + (1.0 - norm_S) * 180 
-        num_grains = int(10 + (norm_S * 1500)) 
+        if freq > 18000:
+            continue
+            
+        # LFO (Oscilador de Baja Frecuencia) que depende del autovalor
+        # Autovalores grandes respiran rápido, los pequeños son lentos
+        lfo_rate = 0.5 + (val * 3.0) 
+        lfo = 0.5 * (1 + np.sin(2 * np.pi * lfo_rate * t))
         
-        for _ in range(num_grains):
-            grain_dur_ms = random.uniform(grain_min_ms, grain_max_ms)
-            grain_samples = int((grain_dur_ms / 1000.0) * sample_rate)
-            
-            pitch_shift = random.uniform(1.0 - (norm_S * 0.7), 1.0 + (norm_S * 0.7))
-            grain_freq = base_freq * pitch_shift
-            
-            t_grain = np.linspace(0, grain_dur_ms / 1000.0, grain_samples, endpoint=False)
-            grain_wave = np.sin(2 * np.pi * grain_freq * t_grain)
-            
-            window = np.hanning(grain_samples)
-            grain_wave *= window
-            
-            start_sample = random.randint(0, total_samples - grain_samples - 1)
-            
-            pan = random.uniform(0.5 - (norm_S * 0.5), 0.5 + (norm_S * 0.5))
-            left_gain = np.cos(pan * np.pi / 2)
-            right_gain = np.sin(pan * np.pi / 2)
-            
-            audio_left[start_sample:start_sample + grain_samples] += grain_wave * left_gain * 0.15
-            audio_right[start_sample:start_sample + grain_samples] += grain_wave * right_gain * 0.15
+        # Síntesis FM (Modulación de Frecuencia para textura metálica)
+        mod_index = val * 8.0
+        modulator = np.sin(2 * np.pi * (freq * 0.5) * t) * mod_index
+        
+        voice = np.sin(2 * np.pi * freq * t + modulator)
+        
+        # La probabilidad física dicta la amplitud
+        voice *= val 
+        voice *= lfo
+        
+        audio_mix += voice
 
-    attack = int(0.15 * sample_rate)
-    decay = int(0.4 * sample_rate)
+    # Envolvente lenta (Attack y Release masivos para estilo Pad Sci-Fi)
+    attack = int(0.3 * sample_rate)
+    decay = int(0.5 * sample_rate)
     env = np.ones(total_samples)
     env[:attack] = np.linspace(0, 1, attack)
     env[-decay:] = np.linspace(1, 0, decay)
     
-    audio_left *= env
-    audio_right *= env
+    audio_mix *= env
     
-    final_audio = np.vstack((audio_left, audio_right)).T
+    # Efecto "Haas" estéreo para ampliar la imagen acústica
+    left = audio_mix * 0.8
+    # Retrasamos el canal derecho 20 milisegundos para estéreo inmenso
+    right = np.roll(audio_mix, int(sample_rate * 0.02)) * 0.8 
+    
+    final_audio = np.vstack((left, right)).T
     max_val = np.max(np.abs(final_audio))
     if max_val > 0:
         final_audio = final_audio / max_val
