@@ -1,5 +1,5 @@
 # ============================================================
-# simulations.py (Rama: Espectro de Schmidt / Autovalores)
+# simulations.py (NUEVO: Extracción del Espectro de Schmidt)
 # ============================================================
 import numpy as np
 from qiskit import transpile
@@ -9,15 +9,16 @@ from circuit import apply_random_circuit
 
 def generate_schmidt_spectrum_data(num_qubits, layers):
     """
-    Realiza el corte bipartito y extrae los autovalores exactos 
-    (Espectro de Schmidt al cuadrado) de la matriz de densidad reducida.
+    Calcula el Espectro de Entrelazamiento exacto.
+    Divide el sistema a la mitad y extrae todos los autovalores 
+    (coeficientes de Schmidt al cuadrado) de la matriz de densidad reducida.
     """
     simulator = AerSimulator(method="statevector")
-    spectrum_data = []
-
-    # Corte bipartito (Mitad derecha trazada)
-    trace_over_B = list(range(num_qubits // 2, num_qubits))
+    all_layers_spectra = []
     
+    # Corte bipartito exacto: Trazamos la mitad derecha del procesador
+    trace_over_B = list(range(num_qubits // 2, num_qubits))
+
     for layer_idx in range(layers + 1):
         qc = apply_random_circuit(num_qubits, layer_idx)
         qc.save_statevector()
@@ -26,15 +27,16 @@ def generate_schmidt_spectrum_data(num_qubits, layers):
         result = simulator.run(qc_comp).result()
         state = result.get_statevector(qc_comp)
         
+        # 1. Matriz de Densidad Reducida de la mitad izquierda
         rho_A = partial_trace(state, trace_over_B)
         
-        # 1. Extraer los autovalores de la matriz rho_A
-        eigenvalues = np.real(np.linalg.eigvals(rho_A.data))
+        # 2. Diagonalización rigurosa para obtener los autovalores de Schmidt
+        evals = np.real(np.linalg.eigvals(rho_A.data))
         
-        # 2. Ordenar de mayor a menor y filtrar el "polvo" numérico cuántico
-        eigenvalues = np.sort(eigenvalues)[::-1]
-        eigenvalues = eigenvalues[eigenvalues > 1e-6]
+        # 3. Ordenamos de mayor a menor y filtramos el ruido de precisión de máquina
+        evals = np.sort(evals)[::-1]
+        evals = evals[evals > 1e-8]
         
-        spectrum_data.append((layer_idx, eigenvalues))
+        all_layers_spectra.append((layer_idx, evals))
         
-    return spectrum_data
+    return all_layers_spectra

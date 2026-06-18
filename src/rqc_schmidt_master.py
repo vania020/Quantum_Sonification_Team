@@ -2,7 +2,7 @@ import numpy as np
 import random
 from pathlib import Path
 from simulations import generate_schmidt_spectrum_data
-from sonification import export_schmidt_sci_fi_to_wav
+from sonification import export_schmidt_spectrum_to_wav
 
 if __name__ == "__main__":
     random.seed(42)
@@ -11,20 +11,23 @@ if __name__ == "__main__":
     num_qubits = 15
     layers = 10
 
-    print(f"Iniciando Extracción del Espectro de Schmidt para {num_qubits} qubits...")
+    print(f"Iniciando Análisis de Espectro de Schmidt para {num_qubits} qubits...")
+    print("Rigor Físico: Distribución exacta de Autovalores de Entrelazamiento Bipartito")
+    print("Rigor Acústico: Síntesis Espectral Inarmónica (Timbre Cuántico)")
     
-    spectrum_data = generate_schmidt_spectrum_data(
+    layer_data = generate_schmidt_spectrum_data(
         num_qubits=num_qubits,
         layers=layers
     )
 
-    output_dir = Path("../outputs_schmidt_scifi")
+    output_dir = Path("../outputs_schmidt_spectrum")
     output_dir.mkdir(exist_ok=True, parents=True)
 
-    for layer_number, eigenvalues in spectrum_data:
-        filename = output_dir / f"schmidt_sci_fi_layer_{layer_number:02d}.wav"
-        export_schmidt_sci_fi_to_wav(eigenvalues, filename)
-        num_states = len(eigenvalues)
-        print(f"Capa {layer_number:02d} | Estados activos en la mezcla: {num_states} -> Renderizada.")
+    for layer_number, evals in layer_data:
+        filename = output_dir / f"schmidt_layer_{layer_number:02d}.wav"
+        export_schmidt_spectrum_to_wav(evals, filename)
+        
+        # Interpretación Teórica Impresa en Terminal
+        print(f"Capa {layer_number:02d} | Rango de Entrelazamiento (Modos activos): {len(evals)}")
 
-    print("Atmósfera Sci-Fi Cuántica completada.")
+    print("Transmutación física completada exitosamente.")
