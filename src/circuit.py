@@ -1,7 +1,7 @@
 import numpy as np
 import random
 from qiskit import QuantumCircuit
-from qiskit.circuit.library import UnitaryGate, QFT
+from qiskit.circuit.library import UnitaryGate
 from gates import single_q_gates
 
 def create_fsim_gate(theta=np.pi / 2, phi=np.pi / 6):
@@ -30,9 +30,4 @@ def apply_random_circuit(num_qubits, layers):
         start = 0 if layer_idx % 2 == 0 else 1
         for i in range(start, num_qubits - 1, 2):
             qc.append(fsim_gate, [i, i + 1])
-    return qc
-
-def apply_random_circuit_with_qft(num_qubits, layers):
-    qc = apply_random_circuit(num_qubits, layers)
-    qc.append(QFT(num_qubits), range(num_qubits))
     return qc
