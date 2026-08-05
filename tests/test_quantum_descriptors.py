@@ -10,6 +10,7 @@ from circuit import apply_random_circuit
 from simulations import (
     bloch_metrics,
     build_mutual_information_graph,
+    central_cut_entanglement_metrics,
     generate_bloch_graph_data,
     get_bloch_data_from_statevector,
     graph_metrics,
@@ -65,6 +66,27 @@ def test_product_state_has_zero_mutual_information():
     graph, matrix = build_mutual_information_graph(product, 2)
     assert np.allclose(matrix, 0.0)
     assert graph.number_of_edges() == 0
+
+
+
+def test_central_cut_entanglement_for_product_and_bell_states():
+    product = np.array([1.0, 0.0, 0.0, 0.0], complex)
+    product_metrics = central_cut_entanglement_metrics(product, 2)
+    assert np.isclose(
+        product_metrics["central_cut_entanglement_entropy_bits"],
+        0.0,
+    )
+
+    bell = np.array([1.0, 0.0, 0.0, 1.0], complex) / np.sqrt(2)
+    bell_metrics = central_cut_entanglement_metrics(bell, 2)
+    assert np.isclose(
+        bell_metrics["central_cut_entanglement_entropy_bits"],
+        1.0,
+    )
+    assert np.isclose(
+        bell_metrics["central_cut_entanglement_entropy_normalized"],
+        1.0,
+    )
 
 
 def test_graph_metrics_use_the_same_edge_tolerance():

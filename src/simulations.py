@@ -104,6 +104,39 @@ def _single_qubit_entropy(state: Statevector, qubit: int, num_qubits: int) -> fl
     return float(np.real(entropy(partial_trace(state, trace_out), base=2)))
 
 
+
+def central_cut_entanglement_metrics(
+    state: np.ndarray,
+    num_qubits: int,
+) -> dict[str, float]:
+    """Entanglement entropy across the fixed central bipartition.
+
+    For the noiseless global pure state, S(rho_A) is the bipartite
+    entanglement entropy between A and its complement. For 15 qubits this
+    uses A={0,...,6} and B={7,...,14}.
+    """
+    if num_qubits < 2:
+        return {
+            "central_cut_entanglement_entropy_bits": 0.0,
+            "central_cut_entanglement_entropy_normalized": 0.0,
+        }
+
+    left_size = num_qubits // 2
+    trace_out = list(range(left_size, num_qubits))
+    reduced_left = partial_trace(
+        Statevector(np.asarray(state, dtype=complex)),
+        trace_out,
+    )
+    entropy_bits = float(np.real(entropy(reduced_left, base=2)))
+    maximum_bits = float(min(left_size, num_qubits - left_size))
+    normalized = entropy_bits / maximum_bits if maximum_bits > 0.0 else 0.0
+
+    return {
+        "central_cut_entanglement_entropy_bits": entropy_bits,
+        "central_cut_entanglement_entropy_normalized": normalized,
+    }
+
+
 def build_mutual_information_graph(
     state: np.ndarray,
     num_qubits: int,
@@ -255,6 +288,7 @@ def generate_bloch_graph_data(
         full_graph, mi_matrix = build_mutual_information_graph(
             state, num_qubits, edge_tolerance=edge_tolerance
         )
+        entanglement_metrics = central_cut_entanglement_metrics(state, num_qubits)
         backbone = build_sonification_backbone(full_graph)
 
         output.append(
@@ -268,6 +302,7 @@ def generate_bloch_graph_data(
                 "sonification_backbone": backbone,
                 "metrics": {
                     **bloch_metrics(bloch),
+                    **entanglement_metrics,
                     **graph_metrics(
                         mi_matrix,
                         backbone,
