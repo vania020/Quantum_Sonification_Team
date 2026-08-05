@@ -19,6 +19,7 @@ DEFAULT_CONFIG = {
     "voice_gain": 0.22,
     "am_rate_hz": 6.0,
     "am_depth_max": 0.30,
+    "bloch_direction_epsilon": 1e-8,
     "attack_fraction_bfs": 0.20,
     "attack_fraction_dfs": 0.05,
     "event_duration_min_sec": 0.10,
@@ -90,6 +91,13 @@ def synthesize_bloch_note(
     radius = float(bloch_data["r"][node])
     linear_entropy = float(bloch_data["linear_entropy"][node])
 
+    # At r≈0 the Bloch direction is undefined. Keep the qubit audible because
+    # the graph may still carry strong relational information, but use a neutral
+    # carrier and centered pan instead of the numerical theta=phi=0 placeholders.
+    if radius <= float(config["bloch_direction_epsilon"]):
+        theta = np.pi / 2.0
+        phi = np.pi
+
     frequency = theta_to_frequency(theta, config)
     amplitude = float(config["voice_gain"]) * (
         float(config["amplitude_floor"])
@@ -152,7 +160,7 @@ def weighted_bfs_frontiers(
                     )
 
         frontiers.extend(by_depth[depth] for depth in sorted(by_depth))
-        frontiers.append([])  # component separator
+        frontiers.append([])
 
     return frontiers[:-1] if frontiers else []
 
@@ -208,11 +216,17 @@ def render_bfs(
         )
         layer = np.zeros((max(1, int(round(duration * sample_rate))), 2), dtype=float)
         for node, _ in frontier:
-            note = synthesize_bloch_note(node, duration, bloch_data, config, percussive=False)
+            note = synthesize_bloch_note(
+                node, duration, bloch_data, config, percussive=False
+            )
             layer += note / len(frontier)
         pieces.append(layer)
 
-    return np.concatenate(pieces) if pieces else _silence(config["root_duration_sec"], sample_rate)
+    return (
+        np.concatenate(pieces)
+        if pieces
+        else _silence(config["root_duration_sec"], sample_rate)
+    )
 
 
 def render_dfs(
@@ -235,10 +249,16 @@ def render_dfs(
             else mutual_information_to_duration(incoming_weight, config)
         )
         pieces.append(
-            synthesize_bloch_note(node, duration, bloch_data, config, percussive=True)
+            synthesize_bloch_note(
+                node, duration, bloch_data, config, percussive=True
+            )
         )
 
-    return np.concatenate(pieces) if pieces else _silence(config["root_duration_sec"], sample_rate)
+    return (
+        np.concatenate(pieces)
+        if pieces
+        else _silence(config["root_duration_sec"], sample_rate)
+    )
 
 
 def pad_with_zeros(audio: np.ndarray, length: int) -> np.ndarray:
@@ -308,5 +328,8 @@ def concatenate_with_gaps(
             cursor += len(gap)
 
     if pieces:
-        pieces.pop()  # no trailing gap
-    return (np.concatenate(pieces) if pieces else _silence(0.1, sample_rate), boundaries)
+        pieces.pop()
+    return (
+        np.concatenate(pieces) if pieces else _silence(0.1, sample_rate),
+        boundaries,
+    )

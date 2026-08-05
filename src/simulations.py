@@ -33,8 +33,9 @@ def get_bloch_data_from_statevector(
     ``linear_entropy`` is normalized to [0, 1] for a qubit:
         L_q = 1 - ||r_q||^2 = 2(1 - Tr(rho_q^2)).
 
-    ``von_neumann_entropy`` is also reported in bits. The legacy proxy ``1-r``
-    is intentionally removed from the scientific pipeline.
+    ``von_neumann_entropy`` is reported in bits. At r≈0, theta and phi are
+    numerically set to zero only as placeholders; downstream code must use the
+    Bloch radius to recognize that the direction is physically undefined.
     """
     state = np.asarray(state, dtype=complex)
     expected_dimension = 2**num_qubits
@@ -79,8 +80,6 @@ def get_bloch_data_from_statevector(
             theta = float(np.arccos(np.clip(z / radius, -1.0, 1.0)))
             phi = float(np.mod(np.arctan2(y, x), 2.0 * np.pi))
         else:
-            # Direction is undefined at the centre. The amplitude mapping makes
-            # theta and phi acoustically negligible in this limit.
             theta = 0.0
             phi = 0.0
 
@@ -112,9 +111,8 @@ def build_mutual_information_graph(
 ) -> tuple[nx.Graph, np.ndarray]:
     """Build the all-pairs quantum-mutual-information graph.
 
-    The returned graph contains only edges whose mutual information exceeds
-    ``edge_tolerance``. The full symmetric matrix is returned separately and is
-    the object that should be used for quantitative analysis.
+    The graph contains only edges above ``edge_tolerance``. The full symmetric
+    matrix is returned separately and remains the primary quantitative object.
     """
     statevector = Statevector(np.asarray(state, dtype=complex))
     graph = nx.Graph()
@@ -132,7 +130,9 @@ def build_mutual_information_graph(
         ]
         pair_state = partial_trace(statevector, trace_out)
         pair_entropy = float(np.real(entropy(pair_state, base=2)))
-        mutual_information = single_entropy[qubit_a] + single_entropy[qubit_b] - pair_entropy
+        mutual_information = (
+            single_entropy[qubit_a] + single_entropy[qubit_b] - pair_entropy
+        )
 
         if mutual_information < -1e-8:
             raise ValueError(
@@ -140,7 +140,9 @@ def build_mutual_information_graph(
                 f"I({qubit_a}:{qubit_b})={mutual_information}"
             )
 
-        mutual_information = float(np.clip(mutual_information, 0.0, MI_MAX_BITS_TWO_QUBITS))
+        mutual_information = float(
+            np.clip(mutual_information, 0.0, MI_MAX_BITS_TWO_QUBITS)
+        )
         matrix[qubit_a, qubit_b] = mutual_information
         matrix[qubit_b, qubit_a] = mutual_information
 
@@ -151,12 +153,7 @@ def build_mutual_information_graph(
 
 
 def build_sonification_backbone(graph: nx.Graph) -> nx.Graph:
-    """Return a maximum-spanning forest used only as the traversal backbone.
-
-    The full graph and matrix remain the scientific data. The forest removes
-    traversal ambiguity without introducing an arbitrary threshold or creating
-    zero-information edges.
-    """
+    """Return a maximum-spanning forest used only as the traversal backbone."""
     forest = nx.Graph()
     forest.add_nodes_from(graph.nodes)
     if graph.number_of_edges() > 0:
@@ -166,13 +163,20 @@ def build_sonification_backbone(graph: nx.Graph) -> nx.Graph:
     return forest
 
 
-def graph_metrics(matrix: np.ndarray, backbone: nx.Graph) -> dict[str, float]:
-    """Compute compact, non-redundant descriptors of the MI structure."""
+def graph_metrics(
+    matrix: np.ndarray,
+    backbone: nx.Graph,
+    edge_tolerance: float = 1e-10,
+) -> dict[str, float]:
+    """Compute compact MI descriptors using the same numerical edge tolerance."""
     num_qubits = matrix.shape[0]
     upper = matrix[np.triu_indices(num_qubits, k=1)]
-    positive = upper[upper > 0.0]
-    strengths = matrix.sum(axis=1)
-    total = float(np.sum(upper))
+    retained = np.where(upper > edge_tolerance, upper, 0.0)
+    positive = retained[retained > 0.0]
+    strengths = np.zeros(num_qubits, dtype=float)
+    thresholded_matrix = np.where(matrix > edge_tolerance, matrix, 0.0)
+    strengths[:] = thresholded_matrix.sum(axis=1)
+    total = float(np.sum(retained))
 
     if total > 0.0:
         probabilities = positive / total
@@ -183,9 +187,13 @@ def graph_metrics(matrix: np.ndarray, backbone: nx.Graph) -> dict[str, float]:
     possible_edges = num_qubits * (num_qubits - 1) / 2
     return {
         "total_mutual_information": total,
-        "mean_pair_mutual_information": float(np.mean(upper)) if len(upper) else 0.0,
+        "mean_pair_mutual_information": (
+            float(np.mean(retained)) if len(retained) else 0.0
+        ),
         "max_pair_mutual_information": float(np.max(upper)) if len(upper) else 0.0,
-        "positive_edge_density": float(len(positive) / possible_edges) if possible_edges else 0.0,
+        "positive_edge_density": (
+            float(len(positive) / possible_edges) if possible_edges else 0.0
+        ),
         "edge_weight_entropy": edge_entropy,
         "mean_node_strength": float(np.mean(strengths)),
         "max_node_strength": float(np.max(strengths)),
@@ -194,17 +202,40 @@ def graph_metrics(matrix: np.ndarray, backbone: nx.Graph) -> dict[str, float]:
     }
 
 
-def bloch_metrics(data: dict[str, np.ndarray]) -> dict[str, float]:
-    """Return layer-level Bloch summaries, using circular statistics for phi."""
-    phi = data["phi"]
-    circular_resultant = np.mean(np.exp(1j * phi))
+def bloch_metrics(
+    data: dict[str, np.ndarray],
+    direction_epsilon: float = 1e-10,
+) -> dict[str, float]:
+    """Return layer summaries without letting undefined directions dominate."""
+    radius = np.asarray(data["r"], dtype=float)
+    directional_weights = np.where(radius > direction_epsilon, radius, 0.0)
+    weight_sum = float(np.sum(directional_weights))
+
+    if weight_sum > 0.0:
+        mean_theta = float(
+            np.sum(directional_weights * data["theta"]) / weight_sum
+        )
+        circular_resultant = np.sum(
+            directional_weights * np.exp(1j * data["phi"])
+        ) / weight_sum
+        phi_circular_variance = float(1.0 - np.abs(circular_resultant))
+    else:
+        mean_theta = 0.0
+        phi_circular_variance = 0.0
+
     return {
-        "mean_bloch_radius": float(np.mean(data["r"])),
-        "std_bloch_radius": float(np.std(data["r"])),
+        "mean_bloch_radius": float(np.mean(radius)),
+        "std_bloch_radius": float(np.std(radius)),
         "mean_linear_entropy": float(np.mean(data["linear_entropy"])),
-        "mean_von_neumann_entropy": float(np.mean(data["von_neumann_entropy"])),
-        "mean_theta": float(np.mean(data["theta"])),
-        "phi_circular_variance": float(1.0 - np.abs(circular_resultant)),
+        "mean_von_neumann_entropy": float(
+            np.mean(data["von_neumann_entropy"])
+        ),
+        "mean_theta_radius_weighted": mean_theta,
+        "phi_circular_variance_radius_weighted": phi_circular_variance,
+        "directional_weight_sum": weight_sum,
+        "directional_qubit_fraction": float(
+            np.mean(radius > direction_epsilon)
+        ),
     }
 
 
@@ -230,13 +261,18 @@ def generate_bloch_graph_data(
             {
                 "layer": layer,
                 "circuit": circuit,
+                "statevector": state,
                 "bloch": bloch,
                 "mutual_information_matrix": mi_matrix,
                 "mutual_information_graph": full_graph,
                 "sonification_backbone": backbone,
                 "metrics": {
                     **bloch_metrics(bloch),
-                    **graph_metrics(mi_matrix, backbone),
+                    **graph_metrics(
+                        mi_matrix,
+                        backbone,
+                        edge_tolerance=edge_tolerance,
+                    ),
                 },
             }
         )
