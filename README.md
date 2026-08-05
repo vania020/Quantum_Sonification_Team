@@ -1,150 +1,76 @@
-# Quantum Sonification Team
+# Quantum Sonification Team — Paper Branch
 
-A research-driven project for the **sonification of Random Quantum Circuits (RQC)**.
+This branch isolates the scientifically testable core of the project:
 
-This repository explores how quantum information can be transformed into sound. The current model extracts local Bloch-sphere data from a multiqubit random quantum circuit and maps it into stereo audio.
+1. local one-qubit geometry through Bloch descriptors;
+2. all-pairs quantum mutual information as a correlation graph;
+3. deterministic BFS/DFS sonification over a maximum-spanning forest;
+4. explicit metadata and STFT-ready audio outputs.
 
----
+**QFT and spectral-state sonification are intentionally excluded from this branch.** They remain a separate future experiment.
 
-## Overview
+## Scientific mapping
 
-The goal is to create an audio representation of quantum circuit evolution, including:
+| Quantum descriptor | Acoustic parameter |
+|---|---|
+| Bloch polar angle `theta` | logarithmic frequency |
+| Bloch azimuth `phi` | equal-power stereo pan |
+| Bloch radius `r` | amplitude with a fixed floor |
+| normalized linear entropy `1-r^2` | deterministic AM depth |
+| pairwise mutual information `I(i:j)` | event duration on a fixed 0–2 bit scale |
+| maximum-spanning forest | traversal backbone only |
 
-- local qubit behavior
-- phase evolution
-- superposition dynamics
-- mixedness caused by multiqubit interaction
-- layer-by-layer changes in an RQC
+The full all-pairs mutual-information matrix is saved for quantitative analysis. The spanning forest is not treated as the scientific data; it is only a deterministic and connected-as-possible sonification backbone.
 
----
+## Key methodological safeguards
 
-## Pipeline
-
-```text
-Random Quantum Circuit
-        ↓
-Statevector Simulation
-        ↓
-Local Bloch Data Extraction
-        ↓
-Quantum-to-Audio Mapping
-        ↓
-Layer-by-Layer WAV Export
-````
-For each circuit layer, the code extracts local Bloch information from every qubit and generates an audio file.
-
-
----
-
-## Sonification Model
-
-```text
-theta      → frequency
-phi        → stereo panning
-r          → amplitude
-mixedness  → texture/modulation
-```
-
-Where:
-
-* `theta` is the polar angle.
-* `phi` is the azimuthal angle.
-* `r` is the local Bloch vector length.
-* `mixedness = 1 - r` measures how far the local qubit state is from pure.
-
-
----
-
-## Repository Structure
-
-```text
-Quantum_Sonification_Team/
-│
-├── README.md
-├── notebooks/
-├── outputs/
-├── experiments/
-│   ├── rqc_dayana_prob.py
-│   ├── rqc_prototipo.py
-│   ├── rqc_rocio.py
-│   └── rqc_valentino_ampli.py
-│
-└── src/
-    ├── gates.py
-    ├── circuit.py
-    ├── simulations.py
-    ├── sonification.py
-    └── rqc_sonification.py
-```
-
----
-
-## Main Modules
-
-* `gates.py`: defines the √X, √Y, √W, and fSim gates.
-* `circuit.py`: builds the Random Quantum Circuit layer by layer.
-* `simulations.py`: simulates the circuit and extracts local Bloch data.
-* `sonification.py`: maps Bloch data into stereo audio.
-* `rqc_sonification.py`: main script that generates one WAV file per layer.
-
----
-
-## Experiments
-
-The `experiments/` folder contains previous or alternative versions of the project, including probability-based, amplitude-based, and prototype sonification models.
-
----
-
-## Technologies
-
-* Python
-* Qiskit
-* Qiskit Aer
-* NumPy
-* SciPy
-* WAV audio synthesis
-
----
+- one seed produces one prefix-consistent circuit trajectory;
+- no stochastic noise is injected into the audio;
+- BFS and DFS are exported separately;
+- the combined audio is not loop-padded and is only a listening aid;
+- WAV files are not normalized independently, preserving amplitude comparability;
+- zero-information edges are not added;
+- layer metrics, MI matrices, audio configuration and segment boundaries are saved.
 
 ## Installation
 
 ```bash
-pip install numpy scipy qiskit qiskit-aer
+python -m venv .venv
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
----
+## Run
 
-## How to Run
+```bash
+cd src
+python rqc_sonification.py --num-qubits 15 --layers 10 --seed 42
+```
+
+For a dataset, repeat across independent seeds:
+
+```bash
+python rqc_sonification.py --num-qubits 15 --layers 10 --seed 1
+python rqc_sonification.py --num-qubits 15 --layers 10 --seed 2
+python rqc_sonification.py --num-qubits 15 --layers 10 --seed 3
+```
+
+## Tests
 
 From the repository root:
 
 ```bash
-cd src
-python rqc_sonification.py
+pytest -q
 ```
 
-Generated audio files are saved in:
+## STFT features
 
-```text
-outputs/
+```bash
+python analysis/extract_stft_features.py outputs/paper_bloch_graph/seed_000042/audio \
+  --output outputs/paper_bloch_graph/seed_000042/audio_features.csv
 ```
 
----
+## Scope of claims
 
-## Research Direction
-
-This repository investigates how quantum circuit dynamics can be translated into sound in a computationally grounded and perceptually interpretable way.
-
-Future directions include:
-
-* animated Bloch-sphere visualization synchronized with sound
-* interactive exploration of quantum circuits
-* interface to listen to and visualize quantum evolution
-
----
-
-## Contributors
-
-Quantum Sonification Team
-
-
+The code measures total pairwise correlation through quantum mutual information. It does **not** claim that every graph edge is entanglement, and it does not claim that BFS/DFS are quantum observables. They are deterministic navigation rules applied after the quantum descriptors have been computed.

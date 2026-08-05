@@ -1,258 +1,312 @@
-import numpy as np
-import scipy.io.wavfile as wavfile
-import networkx as nx
+"""Deterministic sonification of Bloch descriptors over an MI graph backbone."""
 
+from __future__ import annotations
+
+from collections import deque
+from typing import Iterable
+
+import networkx as nx
+import numpy as np
+from scipy.io import wavfile
+
+MI_MAX_BITS_TWO_QUBITS = 2.0
 
 DEFAULT_CONFIG = {
-    "sample_rate": 44100,
-    "base_freq_bfs": 55.0,
-    "base_freq_dfs": 220.0,
-    "pentatonic_ratios": [1.0, 1.122, 1.25, 1.5, 1.666],
-    "bfs_duration_scale": 1.5,
-    "bfs_min_duration": 0.5,
-    "bfs_max_duration": 3.0,
-    "dfs_duration_scale": 0.4,
-    "dfs_min_duration": 0.08,
-    "dfs_max_duration": 0.4,
-    "bfs_attack_fraction": 0.30,
-    "dfs_attack_fraction": 0.05,
-    "bfs_gain": 0.6,
-    "dfs_gain": 1.0,
-    "bloch_microtune_hz": 5.0,
-    "bloch_fm_index_scale": 2.0,
-    "bloch_texture_rate_hz": 8.0,
-    "bloch_texture_depth": 0.18,
-    "bloch_mixedness_gain_reduction": 0.25,
-    "top_k": 32,
-    "spectral_min_probability": 1e-4,
-    "spectral_max_frequency": 12000.0,
-    "spectral_harmonic_modulo": 16,
+    "sample_rate": 22050,
+    "frequency_min_hz": 110.0,
+    "frequency_max_hz": 880.0,
+    "amplitude_floor": 0.12,
+    "voice_gain": 0.22,
+    "am_rate_hz": 6.0,
+    "am_depth_max": 0.30,
+    "attack_fraction_bfs": 0.20,
+    "attack_fraction_dfs": 0.05,
+    "event_duration_min_sec": 0.10,
+    "event_duration_max_sec": 0.60,
+    "root_duration_sec": 0.30,
+    "component_gap_sec": 0.12,
+    "layer_gap_sec": 0.20,
+    "combined_bfs_gain": 0.5,
+    "combined_dfs_gain": 0.5,
 }
 
 
-def merge_config(config):
-    merged = DEFAULT_CONFIG.copy()
-    if config:
-        merged.update(config)
-    return merged
+def merge_config(overrides=None) -> dict:
+    config = DEFAULT_CONFIG.copy()
+    if overrides:
+        config.update(overrides)
+    return config
 
 
-def make_envelope(total_samples, attack_fraction):
-    """Asymmetric envelope 0 -> 1 -> 0. It does not change event duration."""
-    if total_samples <= 1:
-        return np.ones(max(total_samples, 1))
-
-    attack = int(np.clip(attack_fraction, 0.0, 1.0) * total_samples)
-    attack = max(1, min(attack, total_samples - 1))
-    decay = total_samples - attack
-
-    return np.concatenate([
-        np.linspace(0.0, 1.0, attack, endpoint=False),
-        np.linspace(1.0, 0.0, decay, endpoint=True),
-    ])
+def make_envelope(num_samples: int, attack_fraction: float) -> np.ndarray:
+    if num_samples <= 1:
+        return np.ones(max(1, num_samples), dtype=float)
+    attack = max(1, min(num_samples - 1, int(num_samples * attack_fraction)))
+    decay = num_samples - attack
+    return np.concatenate(
+        [
+            np.linspace(0.0, 1.0, attack, endpoint=False),
+            np.linspace(1.0, 0.0, decay, endpoint=True),
+        ]
+    )
 
 
-def node_pitch(node_id, base_f, config):
-    ratios = config["pentatonic_ratios"]
-    octave = node_id // len(ratios)
-    ratio = ratios[node_id % len(ratios)]
-    return base_f * ratio * (2 ** octave)
+def theta_to_frequency(theta: float, config: dict) -> float:
+    """Map theta monotonically to a logarithmic audible frequency range."""
+    fraction = float(np.clip(theta / np.pi, 0.0, 1.0))
+    low = float(config["frequency_min_hz"])
+    high = float(config["frequency_max_hz"])
+    return low * (high / low) ** fraction
 
 
-def stereo_pan(signal, node_id, num_nodes):
-    pan = 0.5 if num_nodes <= 1 else node_id / (num_nodes - 1)
+def phi_to_equal_power_pan(signal: np.ndarray, phi: float) -> np.ndarray:
+    pan = float(np.mod(phi, 2.0 * np.pi) / (2.0 * np.pi))
     left = signal * np.cos(pan * np.pi / 2.0)
     right = signal * np.sin(pan * np.pi / 2.0)
-    return np.vstack((left, right)).T
+    return np.column_stack([left, right])
 
 
-def synthesize_bloch_note(node_id, base_f, duration_sec, bloch_data, num_nodes, is_percussive, config):
-    """
-    Deterministic Bloch synthesis. No stochastic noise.
+def mutual_information_to_duration(weight: float, config: dict) -> float:
+    """Use the fixed physical range I in [0,2] bits; no per-layer renormalization."""
+    normalized = float(np.clip(weight / MI_MAX_BITS_TWO_QUBITS, 0.0, 1.0))
+    minimum = float(config["event_duration_min_sec"])
+    maximum = float(config["event_duration_max_sec"])
+    return maximum - normalized * (maximum - minimum)
 
-    theta_q -> microtuning
-    phi_q   -> FM index
-    1-r_q   -> deterministic amplitude texture and mild gain reduction
-    node q  -> pitch scaffold, octave group, stereo position
-    """
-    sample_rate = config["sample_rate"]
-    total_samples = max(1, int(sample_rate * duration_sec))
-    t = np.linspace(0.0, duration_sec, total_samples, endpoint=False)
 
-    theta = float(bloch_data["theta"][node_id])
-    phi = float(bloch_data["phi"][node_id])
-    r = float(bloch_data["r"][node_id])
-    mix = float(bloch_data["mixedness"][node_id])
+def synthesize_bloch_note(
+    node: int,
+    duration_sec: float,
+    bloch_data: dict[str, np.ndarray],
+    config: dict,
+    percussive: bool,
+) -> np.ndarray:
+    sample_rate = int(config["sample_rate"])
+    num_samples = max(1, int(round(sample_rate * duration_sec)))
+    time = np.arange(num_samples, dtype=float) / sample_rate
 
-    fund = node_pitch(node_id, base_f, config) + config["bloch_microtune_hz"] * theta
+    theta = float(bloch_data["theta"][node])
+    phi = float(bloch_data["phi"][node])
+    radius = float(bloch_data["r"][node])
+    linear_entropy = float(bloch_data["linear_entropy"][node])
 
-    phi_norm = phi / (2.0 * np.pi)
-    fm_index = config["bloch_fm_index_scale"] * phi_norm
-    modulator = fm_index * np.sin(2.0 * np.pi * (2.0 * fund) * t)
-    signal = np.sin(2.0 * np.pi * fund * t + modulator)
-
-    texture = 1.0 + config["bloch_texture_depth"] * mix * np.sin(
-        2.0 * np.pi * config["bloch_texture_rate_hz"] * t
+    frequency = theta_to_frequency(theta, config)
+    amplitude = float(config["voice_gain"]) * (
+        float(config["amplitude_floor"])
+        + (1.0 - float(config["amplitude_floor"])) * radius
     )
-    gain = r * (1.0 - config["bloch_mixedness_gain_reduction"] * mix)
-    signal = gain * texture * signal
+    am_depth = float(config["am_depth_max"]) * linear_entropy
+    modulation = 1.0 + am_depth * np.sin(
+        2.0 * np.pi * float(config["am_rate_hz"]) * time
+    )
+    mono = amplitude * modulation * np.sin(2.0 * np.pi * frequency * time)
 
-    attack_fraction = config["dfs_attack_fraction"] if is_percussive else config["bfs_attack_fraction"]
-    signal *= make_envelope(total_samples, attack_fraction)
-
-    return stereo_pan(signal, node_id, num_nodes)
-
-
-def spectral_peak_indices(statevector, config):
-    probs = np.abs(statevector) ** 2
-    probs = probs / np.sum(probs)
-    top_k = min(int(config["top_k"]), len(probs))
-    indices = np.argsort(probs)[-top_k:]
-    indices = indices[np.argsort(probs[indices])[::-1]]
-    return probs, indices
+    attack_key = "attack_fraction_dfs" if percussive else "attack_fraction_bfs"
+    mono *= make_envelope(num_samples, float(config[attack_key]))
+    return phi_to_equal_power_pan(mono, phi)
 
 
-def synthesize_spectral_note(node_id, base_f, duration_sec, statevector, num_nodes, is_percussive, config):
-    """
-    Deterministic spectral synthesis.
-
-    The same function is used for the base state and the QFT-transformed state.
-    This is the fair QFT toggle.
-    """
-    sample_rate = config["sample_rate"]
-    total_samples = max(1, int(sample_rate * duration_sec))
-    t = np.linspace(0.0, duration_sec, total_samples, endpoint=False)
-
-    fund = node_pitch(node_id, base_f, config)
-    probs, peak_indices = spectral_peak_indices(statevector, config)
-    selected_probs = probs[peak_indices]
-
-    valid = selected_probs >= config["spectral_min_probability"]
-    peak_indices = peak_indices[valid]
-    selected_probs = selected_probs[valid]
-
-    signal = np.zeros(total_samples)
-
-    if len(peak_indices) == 0 or np.sum(selected_probs) <= 0:
-        signal = 0.5 * np.sin(2.0 * np.pi * fund * t)
-    else:
-        weights = selected_probs / np.sum(selected_probs)
-        for idx, weight in zip(peak_indices, weights):
-            harmonic = (int(idx) % int(config["spectral_harmonic_modulo"])) + 1
-            freq = fund * harmonic
-            if freq <= config["spectral_max_frequency"]:
-                signal += weight * np.sin(2.0 * np.pi * freq * t)
-
-    max_abs = np.max(np.abs(signal))
-    if max_abs > 0:
-        signal = signal / max_abs
-
-    attack_fraction = config["dfs_attack_fraction"] if is_percussive else config["bfs_attack_fraction"]
-    signal *= make_envelope(total_samples, attack_fraction)
-
-    return stereo_pan(signal, node_id, num_nodes)
+def _sorted_neighbors(graph: nx.Graph, node: int) -> list[int]:
+    return sorted(
+        graph.neighbors(node),
+        key=lambda neighbor: (-float(graph[node][neighbor]["weight"]), int(neighbor)),
+    )
 
 
-def bfs_frontier_average_weight(graph, center_node, nodes_in_layer, dist):
-    """Average only the frontier edges entering the current BFS layer."""
-    if dist == 0:
-        return 0.1
-
-    weights = []
-    for node in nodes_in_layer:
-        path = nx.shortest_path(graph, center_node, node)
-        previous_node = path[-2]
-        weights.append(graph.get_edge_data(previous_node, node)["weight"])
-
-    return float(np.mean(weights)) if weights else 0.1
+def _ordered_components(graph: nx.Graph, preferred_root: int) -> list[set[int]]:
+    components = [set(component) for component in nx.connected_components(graph)]
+    return sorted(
+        components,
+        key=lambda component: (
+            0 if preferred_root in component else 1,
+            min(component),
+        ),
+    )
 
 
-def render_with_bfs_dfs(graph, note_synth, config):
-    """Common BFS/DFS renderer used by all comparison modes."""
-    sample_rate = config["sample_rate"]
-    num_nodes = len(graph.nodes)
-    center_node = num_nodes // 2
+def _component_root(component: set[int], preferred_root: int) -> int:
+    return preferred_root if preferred_root in component else min(component)
 
-    lengths = nx.single_source_shortest_path_length(graph, center_node)
-    max_dist = max(lengths.values()) if lengths else 0
 
-    bfs_sequence = []
-    for dist in range(max_dist + 1):
-        nodes_in_layer = [node for node, d in lengths.items() if d == dist]
-        avg_weight = bfs_frontier_average_weight(graph, center_node, nodes_in_layer, dist)
-        dur = np.clip(
-            config["bfs_duration_scale"] / (avg_weight + 1e-5),
-            config["bfs_min_duration"],
-            config["bfs_max_duration"],
+def weighted_bfs_frontiers(
+    graph: nx.Graph,
+    preferred_root: int,
+) -> list[list[tuple[int, float]]]:
+    """Return BFS frontiers with deterministic weight-sorted neighbours."""
+    frontiers: list[list[tuple[int, float]]] = []
+
+    for component in _ordered_components(graph, preferred_root):
+        root = _component_root(component, preferred_root)
+        queue = deque([(root, 0, 0.0)])
+        visited = {root}
+        by_depth: dict[int, list[tuple[int, float]]] = {}
+
+        while queue:
+            node, depth, incoming_weight = queue.popleft()
+            by_depth.setdefault(depth, []).append((node, incoming_weight))
+            for neighbor in _sorted_neighbors(graph, node):
+                if neighbor in component and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(
+                        (neighbor, depth + 1, float(graph[node][neighbor]["weight"]))
+                    )
+
+        frontiers.extend(by_depth[depth] for depth in sorted(by_depth))
+        frontiers.append([])  # component separator
+
+    return frontiers[:-1] if frontiers else []
+
+
+def weighted_dfs_events(
+    graph: nx.Graph,
+    preferred_root: int,
+) -> list[tuple[int, float] | None]:
+    """Return deterministic DFS events; None marks a component separator."""
+    events: list[tuple[int, float] | None] = []
+
+    for component in _ordered_components(graph, preferred_root):
+        root = _component_root(component, preferred_root)
+        visited: set[int] = set()
+
+        def visit(node: int, incoming_weight: float) -> None:
+            visited.add(node)
+            events.append((node, incoming_weight))
+            for neighbor in _sorted_neighbors(graph, node):
+                if neighbor in component and neighbor not in visited:
+                    visit(neighbor, float(graph[node][neighbor]["weight"]))
+
+        visit(root, 0.0)
+        events.append(None)
+
+    return events[:-1] if events else []
+
+
+def _silence(duration_sec: float, sample_rate: int) -> np.ndarray:
+    return np.zeros((max(1, int(round(duration_sec * sample_rate))), 2), dtype=float)
+
+
+def render_bfs(
+    backbone: nx.Graph,
+    bloch_data: dict[str, np.ndarray],
+    preferred_root: int,
+    config: dict,
+) -> np.ndarray:
+    sample_rate = int(config["sample_rate"])
+    pieces: list[np.ndarray] = []
+
+    for frontier in weighted_bfs_frontiers(backbone, preferred_root):
+        if not frontier:
+            pieces.append(_silence(float(config["component_gap_sec"]), sample_rate))
+            continue
+
+        incoming_weights = [weight for _, weight in frontier if weight > 0.0]
+        weight = float(np.mean(incoming_weights)) if incoming_weights else 0.0
+        duration = (
+            float(config["root_duration_sec"])
+            if not incoming_weights
+            else mutual_information_to_duration(weight, config)
         )
-        layer_audio = np.zeros((int(sample_rate * dur), 2))
-        for node in nodes_in_layer:
-            layer_audio += note_synth(node, config["base_freq_bfs"], dur, False) / max(1, len(nodes_in_layer))
-        bfs_sequence.append(layer_audio)
-    bfs_full = np.concatenate(bfs_sequence) if bfs_sequence else np.zeros((10, 2))
+        layer = np.zeros((max(1, int(round(duration * sample_rate))), 2), dtype=float)
+        for node, _ in frontier:
+            note = synthesize_bloch_note(node, duration, bloch_data, config, percussive=False)
+            layer += note / len(frontier)
+        pieces.append(layer)
 
-    dfs_edges = list(nx.dfs_edges(graph, source=center_node))
-    dfs_sequence = []
-    if not dfs_edges:
-        dfs_sequence.append(note_synth(center_node, config["base_freq_dfs"], 2.0, True))
-    else:
-        for u, v in dfs_edges:
-            weight = graph.get_edge_data(u, v)["weight"]
-            dur = np.clip(
-                config["dfs_duration_scale"] / (weight + 1e-5),
-                config["dfs_min_duration"],
-                config["dfs_max_duration"],
-            )
-            dfs_sequence.append(note_synth(v, config["base_freq_dfs"], dur, True))
-    dfs_full = np.concatenate(dfs_sequence) if dfs_sequence else np.zeros((10, 2))
-
-    len_bfs = len(bfs_full)
-    len_dfs = len(dfs_full)
-
-    if len_bfs == 0 or len_dfs == 0:
-        final_audio = bfs_full if len_bfs >= len_dfs else dfs_full
-    elif len_dfs < len_bfs:
-        repeats = (len_bfs // len_dfs) + 1
-        dfs_padded = np.tile(dfs_full, (repeats, 1))[:len_bfs]
-        final_audio = config["bfs_gain"] * bfs_full + config["dfs_gain"] * dfs_padded
-    else:
-        repeats = (len_dfs // len_bfs) + 1
-        bfs_padded = np.tile(bfs_full, (repeats, 1))[:len_dfs]
-        final_audio = config["bfs_gain"] * bfs_padded + config["dfs_gain"] * dfs_full
-
-    max_val = np.max(np.abs(final_audio))
-    if max_val > 0:
-        final_audio = final_audio / max_val
-
-    return final_audio.astype(np.float32)
+    return np.concatenate(pieces) if pieces else _silence(config["root_duration_sec"], sample_rate)
 
 
-def export_layer_audio(graph, layer_payload, filename, mode, config=None):
-    """
-    Export one layer to WAV.
+def render_dfs(
+    backbone: nx.Graph,
+    bloch_data: dict[str, np.ndarray],
+    preferred_root: int,
+    config: dict,
+) -> np.ndarray:
+    sample_rate = int(config["sample_rate"])
+    pieces: list[np.ndarray] = []
 
-    mode:
-        bloch         -> deterministic Bloch descriptors, no stochastic noise
-        spectral_base -> spectral engine using |psi_l>
-        spectral_qft  -> same spectral engine using QFT|psi_l>
+    for event in weighted_dfs_events(backbone, preferred_root):
+        if event is None:
+            pieces.append(_silence(float(config["component_gap_sec"]), sample_rate))
+            continue
+        node, incoming_weight = event
+        duration = (
+            float(config["root_duration_sec"])
+            if incoming_weight <= 0.0
+            else mutual_information_to_duration(incoming_weight, config)
+        )
+        pieces.append(
+            synthesize_bloch_note(node, duration, bloch_data, config, percussive=True)
+        )
+
+    return np.concatenate(pieces) if pieces else _silence(config["root_duration_sec"], sample_rate)
+
+
+def pad_with_zeros(audio: np.ndarray, length: int) -> np.ndarray:
+    if len(audio) >= length:
+        return audio[:length]
+    return np.pad(audio, ((0, length - len(audio)), (0, 0)))
+
+
+def render_layer_audio(
+    backbone: nx.Graph,
+    bloch_data: dict[str, np.ndarray],
+    preferred_root: int,
+    config=None,
+) -> dict[str, np.ndarray]:
+    """Render BFS, DFS and a non-looped listening mix.
+
+    BFS and DFS remain separate primary outputs. The combined file is only a
+    listening aid; it must not replace branch-specific quantitative analysis.
     """
     config = merge_config(config)
-    num_nodes = len(graph.nodes)
+    bfs = render_bfs(backbone, bloch_data, preferred_root, config)
+    dfs = render_dfs(backbone, bloch_data, preferred_root, config)
 
-    if mode == "bloch":
-        bloch_data = layer_payload["bloch"]
-        def note_synth(node_id, base_f, duration_sec, is_percussive):
-            return synthesize_bloch_note(node_id, base_f, duration_sec, bloch_data, num_nodes, is_percussive, config)
-    elif mode == "spectral_base":
-        statevector = layer_payload["state_base"]
-        def note_synth(node_id, base_f, duration_sec, is_percussive):
-            return synthesize_spectral_note(node_id, base_f, duration_sec, statevector, num_nodes, is_percussive, config)
-    elif mode == "spectral_qft":
-        statevector = layer_payload["state_qft"]
-        def note_synth(node_id, base_f, duration_sec, is_percussive):
-            return synthesize_spectral_note(node_id, base_f, duration_sec, statevector, num_nodes, is_percussive, config)
-    else:
-        raise ValueError("mode must be 'bloch', 'spectral_base', or 'spectral_qft'")
+    target_length = max(len(bfs), len(dfs))
+    combined = (
+        float(config["combined_bfs_gain"]) * pad_with_zeros(bfs, target_length)
+        + float(config["combined_dfs_gain"]) * pad_with_zeros(dfs, target_length)
+    )
 
-    audio = render_with_bfs_dfs(graph, note_synth, config)
-    wavfile.write(filename, config["sample_rate"], audio)
+    for name, audio in {"bfs": bfs, "dfs": dfs, "combined": combined}.items():
+        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+        if peak > 1.0 + 1e-9:
+            raise ValueError(
+                f"{name} audio would clip (peak={peak:.3f}); reduce fixed gains."
+            )
+
+    return {
+        "bfs": bfs.astype(np.float32),
+        "dfs": dfs.astype(np.float32),
+        "combined": combined.astype(np.float32),
+    }
+
+
+def write_wav(path, audio: np.ndarray, sample_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wavfile.write(path, sample_rate, audio.astype(np.float32))
+
+
+def concatenate_with_gaps(
+    chunks: Iterable[np.ndarray],
+    gap_sec: float,
+    sample_rate: int,
+) -> tuple[np.ndarray, list[tuple[float, float]]]:
+    pieces: list[np.ndarray] = []
+    boundaries: list[tuple[float, float]] = []
+    cursor = 0
+    gap = _silence(gap_sec, sample_rate)
+
+    for index, chunk in enumerate(chunks):
+        start = cursor / sample_rate
+        pieces.append(chunk)
+        cursor += len(chunk)
+        end = cursor / sample_rate
+        boundaries.append((start, end))
+        if index >= 0:
+            pieces.append(gap)
+            cursor += len(gap)
+
+    if pieces:
+        pieces.pop()  # no trailing gap
+    return (np.concatenate(pieces) if pieces else _silence(0.1, sample_rate), boundaries)

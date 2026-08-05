@@ -1,124 +1,147 @@
+"""Command-line entry point for the paper-ready Bloch + MI graph pipeline."""
+
+from __future__ import annotations
+
+import argparse
 import csv
-import random
+import json
 from pathlib import Path
 
 import numpy as np
 
-from simulations import generate_fair_comparison_data
-from sonification import export_layer_audio, DEFAULT_CONFIG
+from simulations import generate_bloch_graph_data
+from sonification import (
+    DEFAULT_CONFIG,
+    concatenate_with_gaps,
+    render_layer_audio,
+    write_wav,
+)
 
 
-NUM_QUBITS = 15
-LAYERS = 10
-SEED = 42
-
-# Render all three to separate folders.
-# For the strict QFT experiment, compare spectral_base vs spectral_qft.
-# For representation comparison, compare bloch vs spectral_qft.
-MODES_TO_RENDER = ["bloch", "spectral_base", "spectral_qft"]
-
-OUTPUT_DIR = Path("../outputs_fair_qft_comparison")
-
-CONFIG = DEFAULT_CONFIG.copy()
-CONFIG.update({
-    "top_k": 32,
-    "spectral_min_probability": 1e-4,
-    "bfs_gain": 0.6,
-    "dfs_gain": 1.0,
-    "bfs_attack_fraction": 0.30,
-    "dfs_attack_fraction": 0.05,
-})
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--num-qubits", type=int, default=15)
+    parser.add_argument("--layers", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--root", type=int, default=None)
+    parser.add_argument("--edge-tolerance", type=float, default=1e-10)
+    parser.add_argument("--output-dir", type=Path, default=Path("../outputs/paper_bloch_graph"))
+    return parser.parse_args()
 
 
-def write_metrics_csv(layer_data, output_dir):
-    csv_path = output_dir / "qft_comparison_metrics.csv"
-
-    fieldnames = [
-        "layer",
-        "base_top_k_mass",
-        "qft_top_k_mass",
-        "delta_top_k_mass",
-        "base_shannon_entropy",
-        "qft_shannon_entropy",
-        "delta_shannon_entropy",
-        "base_participation_ratio",
-        "qft_participation_ratio",
-        "delta_participation_ratio",
-    ]
-
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+def write_layer_metrics(records, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["seed", "num_qubits", "layer", *records[0]["metrics"].keys()]
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
-
-        for item in layer_data:
-            mb = item["metrics_base"]
-            mq = item["metrics_qft"]
-            writer.writerow({
-                "layer": item["layer"],
-                "base_top_k_mass": mb["top_k_mass"],
-                "qft_top_k_mass": mq["top_k_mass"],
-                "delta_top_k_mass": mq["top_k_mass"] - mb["top_k_mass"],
-                "base_shannon_entropy": mb["shannon_entropy"],
-                "qft_shannon_entropy": mq["shannon_entropy"],
-                "delta_shannon_entropy": mq["shannon_entropy"] - mb["shannon_entropy"],
-                "base_participation_ratio": mb["participation_ratio"],
-                "qft_participation_ratio": mq["participation_ratio"],
-                "delta_participation_ratio": mq["participation_ratio"] - mb["participation_ratio"],
-            })
-
-    return csv_path
+        for record in records:
+            writer.writerow(
+                {
+                    "seed": record["seed"],
+                    "num_qubits": record["num_qubits"],
+                    "layer": record["layer"],
+                    **record["metrics"],
+                }
+            )
 
 
-def main():
-    random.seed(SEED)
-    np.random.seed(SEED)
+def write_segments(boundaries, path: Path) -> None:
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=["layer", "start_sec", "end_sec"])
+        writer.writeheader()
+        for layer, (start, end) in enumerate(boundaries):
+            writer.writerow({"layer": layer, "start_sec": start, "end_sec": end})
 
-    print("============================================================")
-    print("RQC FAIR COMPARISON: Bloch vs Spectral base vs Spectral QFT")
-    print("============================================================")
-    print(f"num_qubits = {NUM_QUBITS}")
-    print(f"layers     = {LAYERS}")
-    print(f"seed       = {SEED}")
-    print(f"modes      = {MODES_TO_RENDER}")
-    print("No stochastic noise is injected in any mode.")
-    print()
 
-    OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
+def main() -> None:
+    args = parse_args()
+    preferred_root = args.num_qubits // 2 if args.root is None else args.root
+    if not 0 <= preferred_root < args.num_qubits:
+        raise ValueError("root must be a valid qubit index")
 
-    print("Generating quantum data...")
-    layer_data = generate_fair_comparison_data(
-        num_qubits=NUM_QUBITS,
-        layers=LAYERS,
-        seed=SEED,
-        qft_do_swaps=True,
-        top_k=CONFIG["top_k"],
+    run_dir = args.output_dir / f"seed_{args.seed:06d}"
+    audio_root = run_dir / "audio"
+    matrix_root = run_dir / "mutual_information_matrices"
+    matrix_root.mkdir(parents=True, exist_ok=True)
+
+    layer_data = generate_bloch_graph_data(
+        num_qubits=args.num_qubits,
+        layers=args.layers,
+        seed=args.seed,
+        edge_tolerance=args.edge_tolerance,
     )
 
-    metrics_path = write_metrics_csv(layer_data, OUTPUT_DIR)
-    print(f"Metrics written to: {metrics_path}")
-    print()
+    rendered_by_mode = {"bfs": [], "dfs": [], "combined": []}
+    metric_records = []
 
-    for mode in MODES_TO_RENDER:
-        mode_dir = OUTPUT_DIR / mode
-        mode_dir.mkdir(exist_ok=True, parents=True)
-        print(f"Rendering mode: {mode}")
+    for item in layer_data:
+        layer = int(item["layer"])
+        audio = render_layer_audio(
+            item["sonification_backbone"],
+            item["bloch"],
+            preferred_root=preferred_root,
+            config=DEFAULT_CONFIG,
+        )
 
-        for item in layer_data:
-            layer = item["layer"]
-            filename = mode_dir / f"{mode}_layer_{layer:02d}.wav"
-            export_layer_audio(
-                graph=item["graph"],
-                layer_payload=item,
-                filename=filename,
-                mode=mode,
-                config=CONFIG,
+        for mode, signal in audio.items():
+            write_wav(
+                audio_root / mode / f"layer_{layer:02d}.wav",
+                signal,
+                int(DEFAULT_CONFIG["sample_rate"]),
             )
-            print(f"  layer {layer:02d} -> {filename}")
-        print()
+            rendered_by_mode[mode].append(signal)
 
-    print("Done.")
-    print("Strict QFT test: spectral_base vs spectral_qft")
-    print("Representation comparison: bloch vs spectral_qft")
+        np.save(
+            matrix_root / f"mi_layer_{layer:02d}.npy",
+            item["mutual_information_matrix"],
+        )
+        metric_records.append(
+            {
+                "seed": args.seed,
+                "num_qubits": args.num_qubits,
+                "layer": layer,
+                "metrics": item["metrics"],
+            }
+        )
+
+    write_layer_metrics(metric_records, run_dir / "layer_metrics.csv")
+
+    for mode, chunks in rendered_by_mode.items():
+        continuous, boundaries = concatenate_with_gaps(
+            chunks,
+            gap_sec=float(DEFAULT_CONFIG["layer_gap_sec"]),
+            sample_rate=int(DEFAULT_CONFIG["sample_rate"]),
+        )
+        write_wav(
+            audio_root / f"{mode}_continuous.wav",
+            continuous,
+            int(DEFAULT_CONFIG["sample_rate"]),
+        )
+        write_segments(boundaries, audio_root / f"{mode}_segments.csv")
+
+    metadata = {
+        "scientific_scope": "Bloch descriptors plus all-pairs mutual-information graph",
+        "num_qubits": args.num_qubits,
+        "layers": args.layers,
+        "seed": args.seed,
+        "preferred_root": preferred_root,
+        "edge_tolerance": args.edge_tolerance,
+        "audio_config": DEFAULT_CONFIG,
+        "mapping": {
+            "theta": "log-frequency",
+            "phi": "equal-power stereo pan",
+            "bloch_radius": "amplitude with fixed floor",
+            "normalized_linear_entropy": "deterministic amplitude-modulation depth",
+            "mutual_information": "event duration using the fixed 0-to-2-bit range",
+            "graph": "all-pairs MI for analysis; maximum-spanning forest for traversal",
+        },
+        "qft_enabled": False,
+    }
+    with (run_dir / "metadata.json").open("w", encoding="utf-8") as file:
+        json.dump(metadata, file, indent=2)
+
+    print(f"Completed paper pipeline: {run_dir.resolve()}")
 
 
 if __name__ == "__main__":

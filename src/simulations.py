@@ -1,161 +1,244 @@
-import numpy as np
+"""Quantum descriptors for the Bloch + mutual-information graph paper branch."""
+
+from __future__ import annotations
+
+from itertools import combinations
+from typing import Any
+
 import networkx as nx
-from qiskit import transpile
-from qiskit_aer import AerSimulator
-from qiskit.quantum_info import partial_trace, entropy
-from circuit import apply_random_circuit, apply_random_circuit_with_qft
+import numpy as np
+from qiskit.quantum_info import Statevector, entropy, partial_trace
+
+from circuit import apply_random_circuit
+
+MI_MAX_BITS_TWO_QUBITS = 2.0
 
 
-def simulate_statevector(qc, simulator=None):
-    """Return the statevector of a circuit using Aer."""
-    if simulator is None:
-        simulator = AerSimulator(method="statevector")
-
-    qc_run = qc.copy()
-    qc_run.save_statevector()
-    qc_comp = transpile(qc_run, backend=simulator)
-    result = simulator.run(qc_comp).result()
-    return np.asarray(result.get_statevector(qc_comp), dtype=complex)
+def simulate_statevector(circuit) -> np.ndarray:
+    """Simulate a noiseless circuit without backend/transpiler side effects."""
+    state = np.asarray(Statevector.from_instruction(circuit).data, dtype=complex)
+    norm = float(np.vdot(state, state).real)
+    if not np.isclose(norm, 1.0, atol=1e-10):
+        raise ValueError(f"Statevector is not normalized: norm={norm}")
+    return state
 
 
-def get_bloch_data_from_statevector(state, num_qubits, eps=1e-12):
+def get_bloch_data_from_statevector(
+    state: np.ndarray,
+    num_qubits: int,
+    eps: float = 1e-12,
+) -> dict[str, np.ndarray]:
+    """Return local Bloch coordinates and physically defined mixedness metrics.
+
+    ``linear_entropy`` is normalized to [0, 1] for a qubit:
+        L_q = 1 - ||r_q||^2 = 2(1 - Tr(rho_q^2)).
+
+    ``von_neumann_entropy`` is also reported in bits. The legacy proxy ``1-r``
+    is intentionally removed from the scientific pipeline.
     """
-    Extract local Bloch descriptors for every qubit from the global statevector.
+    state = np.asarray(state, dtype=complex)
+    expected_dimension = 2**num_qubits
+    if state.ndim != 1 or len(state) != expected_dimension:
+        raise ValueError(
+            f"Expected a statevector of length {expected_dimension}; got shape {state.shape}."
+        )
 
-    Returns theta, phi, r, mixedness=1-r, and x,y,z.
-    No stochastic noise is introduced here.
-    """
-    dim = len(state)
-    expected_dim = 2 ** num_qubits
-    if dim != expected_dim:
-        raise ValueError(f"Statevector dimension {dim} does not match 2^{num_qubits} = {expected_dim}.")
-
-    indices = np.arange(dim)
-    bloch_data = {
-        "theta": np.zeros(num_qubits),
-        "phi": np.zeros(num_qubits),
-        "r": np.zeros(num_qubits),
-        "mixedness": np.zeros(num_qubits),
-        "x": np.zeros(num_qubits),
-        "y": np.zeros(num_qubits),
-        "z": np.zeros(num_qubits),
+    indices = np.arange(expected_dimension)
+    data = {
+        key: np.zeros(num_qubits, dtype=float)
+        for key in (
+            "x",
+            "y",
+            "z",
+            "theta",
+            "phi",
+            "r",
+            "linear_entropy",
+            "von_neumann_entropy",
+        )
     }
 
-    for q in range(num_qubits):
-        mask = 1 << q
-        indices_0 = indices[(indices & mask) == 0]
-        indices_1 = indices_0 | mask
+    for qubit in range(num_qubits):
+        mask = 1 << qubit
+        indices_zero = indices[(indices & mask) == 0]
+        indices_one = indices_zero | mask
 
-        amp_0 = state[indices_0]
-        amp_1 = state[indices_1]
+        amplitudes_zero = state[indices_zero]
+        amplitudes_one = state[indices_one]
 
-        p0 = np.sum(np.abs(amp_0) ** 2)
-        p1 = np.sum(np.abs(amp_1) ** 2)
-        coherence = np.vdot(amp_0, amp_1)
+        p_zero = float(np.sum(np.abs(amplitudes_zero) ** 2))
+        p_one = float(np.sum(np.abs(amplitudes_one) ** 2))
+        coherence = np.vdot(amplitudes_zero, amplitudes_one)
 
-        x = 2.0 * np.real(coherence)
-        y = 2.0 * np.imag(coherence)
-        z = p0 - p1
+        x = float(2.0 * np.real(coherence))
+        y = float(2.0 * np.imag(coherence))
+        z = float(p_zero - p_one)
+        radius = float(np.clip(np.sqrt(x * x + y * y + z * z), 0.0, 1.0))
 
-        r = float(np.clip(np.sqrt(x * x + y * y + z * z), 0.0, 1.0))
-
-        if r > eps:
-            theta = float(np.arccos(np.clip(z / r, -1.0, 1.0)))
-            phi = float(np.arctan2(y, x))
-            if phi < 0:
-                phi += 2.0 * np.pi
+        if radius > eps:
+            theta = float(np.arccos(np.clip(z / radius, -1.0, 1.0)))
+            phi = float(np.mod(np.arctan2(y, x), 2.0 * np.pi))
         else:
+            # Direction is undefined at the centre. The amplitude mapping makes
+            # theta and phi acoustically negligible in this limit.
             theta = 0.0
             phi = 0.0
 
-        bloch_data["theta"][q] = theta
-        bloch_data["phi"][q] = phi
-        bloch_data["r"][q] = r
-        bloch_data["mixedness"][q] = 1.0 - r
-        bloch_data["x"][q] = x
-        bloch_data["y"][q] = y
-        bloch_data["z"][q] = z
+        eigenvalues = np.array([(1.0 + radius) / 2.0, (1.0 - radius) / 2.0])
+        positive = eigenvalues[eigenvalues > eps]
+        von_neumann_entropy = float(-np.sum(positive * np.log2(positive)))
 
-    return bloch_data
+        data["x"][qubit] = x
+        data["y"][qubit] = y
+        data["z"][qubit] = z
+        data["theta"][qubit] = theta
+        data["phi"][qubit] = phi
+        data["r"][qubit] = radius
+        data["linear_entropy"][qubit] = 1.0 - radius**2
+        data["von_neumann_entropy"][qubit] = von_neumann_entropy
+
+    return data
 
 
-def build_mutual_information_graph(state, num_qubits):
+def _single_qubit_entropy(state: Statevector, qubit: int, num_qubits: int) -> float:
+    trace_out = [index for index in range(num_qubits) if index != qubit]
+    return float(np.real(entropy(partial_trace(state, trace_out), base=2)))
+
+
+def build_mutual_information_graph(
+    state: np.ndarray,
+    num_qubits: int,
+    edge_tolerance: float = 1e-10,
+) -> tuple[nx.Graph, np.ndarray]:
+    """Build the all-pairs quantum-mutual-information graph.
+
+    The returned graph contains only edges whose mutual information exceeds
+    ``edge_tolerance``. The full symmetric matrix is returned separately and is
+    the object that should be used for quantitative analysis.
     """
-    Build the weighted nearest-neighbor graph.
+    statevector = Statevector(np.asarray(state, dtype=complex))
+    graph = nx.Graph()
+    graph.add_nodes_from(range(num_qubits))
+    matrix = np.zeros((num_qubits, num_qubits), dtype=float)
 
-    Edge weight:
-        I(q_i : q_{i+1}) = S(q_i) + S(q_{i+1}) - S(q_i q_{i+1})
+    single_entropy = {
+        qubit: _single_qubit_entropy(statevector, qubit, num_qubits)
+        for qubit in range(num_qubits)
+    }
 
-    The graph is computed from the base RQC state. That keeps BFS/DFS timing
-    identical across Bloch, spectral_base, and spectral_qft modes.
+    for qubit_a, qubit_b in combinations(range(num_qubits), 2):
+        trace_out = [
+            index for index in range(num_qubits) if index not in (qubit_a, qubit_b)
+        ]
+        pair_state = partial_trace(statevector, trace_out)
+        pair_entropy = float(np.real(entropy(pair_state, base=2)))
+        mutual_information = single_entropy[qubit_a] + single_entropy[qubit_b] - pair_entropy
+
+        if mutual_information < -1e-8:
+            raise ValueError(
+                "Mutual information is negative beyond numerical tolerance: "
+                f"I({qubit_a}:{qubit_b})={mutual_information}"
+            )
+
+        mutual_information = float(np.clip(mutual_information, 0.0, MI_MAX_BITS_TWO_QUBITS))
+        matrix[qubit_a, qubit_b] = mutual_information
+        matrix[qubit_b, qubit_a] = mutual_information
+
+        if mutual_information > edge_tolerance:
+            graph.add_edge(qubit_a, qubit_b, weight=mutual_information)
+
+    return graph, matrix
+
+
+def build_sonification_backbone(graph: nx.Graph) -> nx.Graph:
+    """Return a maximum-spanning forest used only as the traversal backbone.
+
+    The full graph and matrix remain the scientific data. The forest removes
+    traversal ambiguity without introducing an arbitrary threshold or creating
+    zero-information edges.
     """
-    G = nx.Graph()
-    G.add_nodes_from(range(num_qubits))
-
-    for i in range(num_qubits - 1):
-        keep = [i, i + 1]
-        trace_over = [j for j in range(num_qubits) if j not in keep]
-
-        rho_ab = partial_trace(state, trace_over)
-        s_a = entropy(partial_trace(rho_ab, [1]), base=2)
-        s_b = entropy(partial_trace(rho_ab, [0]), base=2)
-        s_ab = entropy(rho_ab, base=2)
-
-        mut_info = max(0.0, float(np.real(s_a + s_b - s_ab)))
-        G.add_edge(i, i + 1, weight=mut_info)
-
-    return G
+    forest = nx.Graph()
+    forest.add_nodes_from(graph.nodes)
+    if graph.number_of_edges() > 0:
+        forest.add_edges_from(
+            nx.maximum_spanning_tree(graph, weight="weight").edges(data=True)
+        )
+    return forest
 
 
-def probability_metrics(state, top_k=32, eps=1e-15):
-    """Concentration metrics for checking whether QFT changes usable peaks."""
-    probs = np.abs(state) ** 2
-    probs = probs / np.sum(probs)
+def graph_metrics(matrix: np.ndarray, backbone: nx.Graph) -> dict[str, float]:
+    """Compute compact, non-redundant descriptors of the MI structure."""
+    num_qubits = matrix.shape[0]
+    upper = matrix[np.triu_indices(num_qubits, k=1)]
+    positive = upper[upper > 0.0]
+    strengths = matrix.sum(axis=1)
+    total = float(np.sum(upper))
 
-    sorted_probs = np.sort(probs)[::-1]
-    k = min(top_k, len(sorted_probs))
+    if total > 0.0:
+        probabilities = positive / total
+        edge_entropy = float(-np.sum(probabilities * np.log2(probabilities)))
+    else:
+        edge_entropy = 0.0
 
+    possible_edges = num_qubits * (num_qubits - 1) / 2
     return {
-        "top_k_mass": float(np.sum(sorted_probs[:k])),
-        "shannon_entropy": float(-np.sum(probs * np.log2(probs + eps))),
-        "participation_ratio": float(1.0 / np.sum(probs ** 2)),
+        "total_mutual_information": total,
+        "mean_pair_mutual_information": float(np.mean(upper)) if len(upper) else 0.0,
+        "max_pair_mutual_information": float(np.max(upper)) if len(upper) else 0.0,
+        "positive_edge_density": float(len(positive) / possible_edges) if possible_edges else 0.0,
+        "edge_weight_entropy": edge_entropy,
+        "mean_node_strength": float(np.mean(strengths)),
+        "max_node_strength": float(np.max(strengths)),
+        "backbone_edges": float(backbone.number_of_edges()),
+        "backbone_components": float(nx.number_connected_components(backbone)),
     }
 
 
-def generate_fair_comparison_data(num_qubits, layers, seed=42, qft_do_swaps=True, top_k=32):
-    """
-    Generate layer data for a controlled comparison.
+def bloch_metrics(data: dict[str, np.ndarray]) -> dict[str, float]:
+    """Return layer-level Bloch summaries, using circular statistics for phi."""
+    phi = data["phi"]
+    circular_resultant = np.mean(np.exp(1j * phi))
+    return {
+        "mean_bloch_radius": float(np.mean(data["r"])),
+        "std_bloch_radius": float(np.std(data["r"])),
+        "mean_linear_entropy": float(np.mean(data["linear_entropy"])),
+        "mean_von_neumann_entropy": float(np.mean(data["von_neumann_entropy"])),
+        "mean_theta": float(np.mean(data["theta"])),
+        "phi_circular_variance": float(1.0 - np.abs(circular_resultant)),
+    }
 
-    For every layer:
-      - base state |psi_l>
-      - graph from base state
-      - Bloch descriptors from base state
-      - QFT state QFT|psi_l>
-      - probability concentration metrics for base and QFT states
-    """
-    simulator_sv = AerSimulator(method="statevector")
-    all_layers = []
 
-    for layer_idx in range(layers + 1):
-        qc_base = apply_random_circuit(num_qubits, layer_idx, seed=seed)
-        state_base = simulate_statevector(qc_base, simulator=simulator_sv)
+def generate_bloch_graph_data(
+    num_qubits: int,
+    layers: int,
+    seed: int = 42,
+    edge_tolerance: float = 1e-10,
+) -> list[dict[str, Any]]:
+    """Generate one prefix-consistent RQC trajectory and its descriptors."""
+    output: list[dict[str, Any]] = []
 
-        graph = build_mutual_information_graph(state_base, num_qubits)
-        bloch_data = get_bloch_data_from_statevector(state_base, num_qubits)
-
-        qc_qft = apply_random_circuit_with_qft(
-            num_qubits, layer_idx, seed=seed, do_swaps=qft_do_swaps
+    for layer in range(layers + 1):
+        circuit = apply_random_circuit(num_qubits, layer, seed=seed)
+        state = simulate_statevector(circuit)
+        bloch = get_bloch_data_from_statevector(state, num_qubits)
+        full_graph, mi_matrix = build_mutual_information_graph(
+            state, num_qubits, edge_tolerance=edge_tolerance
         )
-        state_qft = simulate_statevector(qc_qft, simulator=simulator_sv)
+        backbone = build_sonification_backbone(full_graph)
 
-        all_layers.append({
-            "layer": layer_idx,
-            "graph": graph,
-            "bloch": bloch_data,
-            "state_base": state_base,
-            "state_qft": state_qft,
-            "metrics_base": probability_metrics(state_base, top_k=top_k),
-            "metrics_qft": probability_metrics(state_qft, top_k=top_k),
-        })
+        output.append(
+            {
+                "layer": layer,
+                "circuit": circuit,
+                "bloch": bloch,
+                "mutual_information_matrix": mi_matrix,
+                "mutual_information_graph": full_graph,
+                "sonification_backbone": backbone,
+                "metrics": {
+                    **bloch_metrics(bloch),
+                    **graph_metrics(mi_matrix, backbone),
+                },
+            }
+        )
 
-    return all_layers
+    return output
